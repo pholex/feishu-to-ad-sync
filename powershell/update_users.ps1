@@ -16,6 +16,9 @@ if (Test-Path $configPath) {
     exit 1
 }
 
+# 使用配置文件中的变量
+$BaseOU = $DC_BASE_OU
+
 # CSV文件路径
 $csvPath = "$env:USERPROFILE\ad_update_accounts.csv"
 $failuresCsvPath = "$env:USERPROFILE\UpdateAccountFailures.csv"
@@ -35,7 +38,7 @@ $skippedCount = 0
 $failures = @()
 
 try {
-    $users = Import-Csv -Path $csvPath -Encoding Default
+    $users = Import-Csv -Path $csvPath -Encoding UTF8
     
     foreach ($user in $users) {
         # 确保所有属性都是字符串类型
@@ -44,6 +47,16 @@ try {
         $email = [string]$user.EmailAddress
         $employeeID = [string]$user.EmployeeID
         $employeeNumber = [string]$user.EmployeeNumber
+        $deptName = [string]$user.DepartmentName
+        
+        # 构建期望的 OU 路径
+        $expectedOUPath = $BaseOU
+        if ($deptName) {
+            $deptParts = $deptName -split '\\'
+            foreach ($part in $deptParts) {
+                $expectedOUPath = "OU=$part,$expectedOUPath"
+            }
+        }
         
         try {
             # 获取现有用户
@@ -77,14 +90,37 @@ try {
                 $changes += "EmployeeNumber: '$($adUser.EmployeeNumber)' -> '$employeeNumber'"
             }
             
-            # 如果有参数需要更新
-            if ($updateParams.Count -gt 1) {
+            # 检查用户所在OU是否需要移动
+            $currentOU = ($adUser.DistinguishedName -split ',',2)[1]
+            $needMove = $false
+            if ($deptName -and $currentOU -ne $expectedOUPath) {
+                $needMove = $true
+                $changes += "OU: '$currentOU' -> '$expectedOUPath'"
+            }
+            
+            # 如果有参数需要更新或需要移动OU
+            if ($updateParams.Count -gt 1 -or $needMove) {
                 $changesList = $changes -join ', '
                 if ($DryRun) {
                     Write-Host "[DRY-RUN] 将更新: $samAccountName $displayName ($changesList)" -ForegroundColor Yellow
                     $successCount++
                 } else {
-                    Set-ADUser @updateParams
+                    # 先更新字段
+                    if ($updateParams.Count -gt 1) {
+                        Set-ADUser @updateParams
+                    }
+                    # 再移动OU
+                    if ($needMove) {
+                        try {
+                            # 检查目标OU是否存在
+                            $targetOU = Get-ADOrganizationalUnit -Identity $expectedOUPath -ErrorAction Stop
+                            # 重新获取用户DN（可能在Set-ADUser后已更新）
+                            $currentUser = Get-ADUser -Identity $samAccountName -Properties DistinguishedName
+                            Move-ADObject -Identity $currentUser.DistinguishedName -TargetPath $expectedOUPath -ErrorAction Stop
+                        } catch {
+                            Write-Host "  ⚠ OU移动失败: $_ (目标OU: $expectedOUPath)" -ForegroundColor Yellow
+                        }
+                    }
                     Write-Host "✓ 更新成功: $samAccountName $displayName ($changesList)" -ForegroundColor Green
                     $successCount++
                 }
@@ -112,7 +148,7 @@ try {
     
     # 导出失败列表
     if (-not $DryRun -and $failures.Count -gt 0) {
-        $failures | Export-Csv -Path $failuresCsvPath -NoTypeInformation -Encoding Default
+        $failures | Export-Csv -Path $failuresCsvPath -NoTypeInformation -Encoding UTF8
         Write-Host "`n失败详情已导出至: $failuresCsvPath" -ForegroundColor Red
     }
     

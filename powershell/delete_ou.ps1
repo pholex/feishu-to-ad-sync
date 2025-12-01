@@ -26,7 +26,7 @@ $failedCount = 0
 $skippedCount = 0
 
 try {
-    $ous = Import-Csv -Path $CsvPath -Encoding Default
+    $ous = Import-Csv -Path $CsvPath -Encoding UTF8
     
     # 获取所有 OU 的完整信息并按层级深度排序（从深到浅）
     $ouList = @()

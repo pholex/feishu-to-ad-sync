@@ -40,7 +40,7 @@ $passwords = @()
 $failures = @()
 
 try {
-    $users = Import-Csv -Path $csvPath -Encoding Default
+    $users = Import-Csv -Path $csvPath -Encoding UTF8
     
     foreach ($user in $users) {
         # 确保所有属性都是字符串类型
@@ -52,10 +52,12 @@ try {
         $deptName = [string]$user.DepartmentName
         
         # 构建 OU 路径
+        # 飞书路径格式：父部门\子部门 (如：物流部\头程组)
+        # AD路径格式：OU=子部门,OU=父部门,OU=员工,DC=... (如：OU=头程组,OU=物流部,OU=员工,DC=...)
         $ouPath = $BaseOU
         if ($deptName) {
             $deptParts = $deptName -split '\\'
-            [array]::Reverse($deptParts)
+            # 从前往后遍历（父部门到子部门），依次插入到 BaseOU 前
             foreach ($part in $deptParts) {
                 $ouPath = "OU=$part,$ouPath"
             }
@@ -127,6 +129,8 @@ try {
             }
             catch {
                 Write-Host "✗ 创建失败: $samAccountName - $_" -ForegroundColor Red
+                Write-Host "  OU路径: $ouPath" -ForegroundColor Red
+                Write-Host "  部门名称: $deptName" -ForegroundColor Red
                 $failureCount++
                 
                 # 记录失败详情
@@ -134,6 +138,8 @@ try {
                     SamAccountName = $samAccountName
                     DisplayName = $displayName
                     EmailAddress = $email
+                    DepartmentName = $deptName
+                    OUPath = $ouPath
                     ErrorMessage = $_.Exception.Message
                 }
             }
@@ -142,14 +148,14 @@ try {
     
     # 导出密码
     if (-not $DryRun -and $passwords.Count -gt 0) {
-        $passwords | Export-Csv -Path $passwordCsvPath -NoTypeInformation -Encoding Default
+        $passwords | Export-Csv -Path $passwordCsvPath -NoTypeInformation -Encoding UTF8
         Write-Host "`n密码已导出至: $passwordCsvPath" -ForegroundColor Yellow
         Write-Host "警告: 密码文件包含明文密码，请妥善保管并在使用后删除!" -ForegroundColor Red
     }
     
     # 导出失败列表
     if (-not $DryRun -and $failures.Count -gt 0) {
-        $failures | Export-Csv -Path $failuresCsvPath -NoTypeInformation -Encoding Default
+        $failures | Export-Csv -Path $failuresCsvPath -NoTypeInformation -Encoding UTF8
         Write-Host "失败详情已导出至: $failuresCsvPath" -ForegroundColor Red
     }
     

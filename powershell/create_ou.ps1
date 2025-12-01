@@ -49,10 +49,10 @@ function Get-OUPath {
 
 # 读取部门CSV
 try {
-    $departments = Import-Csv -Path $csvPath -Encoding Default -ErrorAction Stop
+    $departments = Import-Csv -Path $csvPath -Encoding UTF8 -ErrorAction Stop
     
     # 按层级排序
-    $departments = $departments | Sort-Object {[int]$_.层级}
+    $departments = $departments | Sort-Object {[int]$_.level}
     
     # 记录统计
     $successCount = 0
@@ -69,7 +69,7 @@ try {
             $deptName = $dept.dept_name
             $deptId = $dept.dept_id
             $parentId = $dept.parent_dept_id
-            $level = [int]$dept.层级
+            $level = [int]$dept.level
             
             # 确定父OU路径
             if ($parentId -eq "0") {

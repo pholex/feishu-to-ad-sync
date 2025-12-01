@@ -25,7 +25,7 @@ $successCount = 0
 $failedCount = 0
 
 try {
-    $users = Import-Csv -Path $CsvPath -Encoding Default
+    $users = Import-Csv -Path $CsvPath -Encoding UTF8
     
     Write-Host "`n===== 处理离职用户 =====" -ForegroundColor Cyan
     Write-Host "目标 OU: $ResignedOU`n"

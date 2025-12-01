@@ -322,7 +322,7 @@ Import-Module ActiveDirectory
 $baseOU = "{DC_BASE_OU}"
 Get-ADOrganizationalUnit -Filter * -SearchBase $baseOU | 
     Select-Object Name, DistinguishedName | 
-    Export-Csv -Path "~/ExistingOUs.csv" -NoTypeInformation -Encoding Default
+    Export-Csv -Path "~/ExistingOUs.csv" -NoTypeInformation -Encoding UTF8
 """
         search_info = f"在 {DC_BASE_OU} 下"
     else:
@@ -330,7 +330,7 @@ Get-ADOrganizationalUnit -Filter * -SearchBase $baseOU |
 Import-Module ActiveDirectory
 Get-ADOrganizationalUnit -Filter * | 
     Select-Object Name, DistinguishedName | 
-    Export-Csv -Path "~/ExistingOUs.csv" -NoTypeInformation -Encoding Default
+    Export-Csv -Path "~/ExistingOUs.csv" -NoTypeInformation -Encoding UTF8
 """
         search_info = "全域"
     
@@ -353,7 +353,7 @@ Get-ADOrganizationalUnit -Filter * |
 Import-Module ActiveDirectory
 Get-ADOrganizationalUnit -Filter * | 
     Select-Object Name, DistinguishedName | 
-    Export-Csv -Path "~/ExistingOUs.csv" -NoTypeInformation -Encoding Default
+    Export-Csv -Path "~/ExistingOUs.csv" -NoTypeInformation -Encoding UTF8
 """
             with open(get_output_path('temp_get_ous.ps1'), 'w', encoding='utf-8-sig') as f:
                 f.write(ps_script_all)
@@ -395,8 +395,8 @@ Get-ADOrganizationalUnit -Filter * |
     base_ou_dn = DC_BASE_OU if DC_BASE_OU else ""
     
     try:
-        encoding = get_windows_encoding()
-        with open(get_output_path('ad_existing_ous.csv'), 'r', encoding=encoding) as f:
+        # PowerShell 使用 UTF8 导出，直接使用 utf-8-sig
+        with open(get_output_path('ad_existing_ous.csv'), 'r', encoding='utf-8-sig') as f:
             reader = csv.DictReader(f)
             for row in reader:
                 name = row['Name']
@@ -439,11 +439,6 @@ def get_existing_ad_users():
     1. {EmployeeNumber: {SamAccountName, DisplayName, EmailAddress}} - 有 Union ID 的用户
     2. {SamAccountName: {SamAccountName, DisplayName, EmailAddress}} - 没有 Union ID 的用户
     """
-    if not DRY_RUN:
-        if not confirm("是否从域控制器获取现有用户列表？"):
-            print("跳过，将尝试创建所有用户")
-            return {}, {}
-    
     print("正在获取..." if not DRY_RUN else "")
     
     # 使用本地脚本副本
@@ -492,8 +487,8 @@ def get_existing_ad_users():
     users_without_union_id = {}  # 没有 Union ID 的用户，用 SamAccountName 作为键
     
     try:
-        encoding = get_windows_encoding()
-        with open(get_output_path('ad_existing_users.csv'), 'r', encoding=encoding) as f:
+        # PowerShell 使用 UTF8 导出，直接使用 utf-8-sig
+        with open(get_output_path('ad_existing_users.csv'), 'r', encoding='utf-8-sig') as f:
             reader = csv.DictReader(f)
             for row in reader:
                 sam = row['SamAccountName']
@@ -812,12 +807,8 @@ def execute_on_dc(operation, csv_file, ps_script, use_local=False):
 
 def download_passwords():
     """下载生成的密码文件并发送邮件"""
-    print("\n【步骤 6/7】下载生成的密码")
-    if not confirm("是否下载新建用户的密码文件？"):
-        print("跳过下载")
-        return
+    print("\n正在下载生成的密码...")
     
-    print("正在下载...")
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     password_file = get_output_path(f"ad_passwords_{timestamp}.csv")
     scp_cmd = f"sshpass -p '{DC_PASSWORD}' scp -o ControlPath={SSH_CONTROL_PATH} {DC_USER}@{DC_HOST}:~/GeneratedPasswords.csv {password_file}"
@@ -826,9 +817,8 @@ def download_passwords():
     if result.returncode == 0:
         print(f"✓ 密码文件已保存到: {password_file}")
         
-        # 发送密码邮件
-        if confirm("是否发送密码邮件给新建用户？"):
-            send_password_emails(password_file)
+        # 自动发送密码邮件
+        send_password_emails(password_file)
     else:
         print("未生成新密码（可能没有新建用户）")
 
@@ -1047,13 +1037,12 @@ if __name__ == "__main__":
     
     # 显示执行步骤概览
     print("\n执行步骤:")
-    print("  1/7 - 同步飞书部门结构到 AD 域")
-    print("  2/7 - 获取 AD 域现有用户")
-    print("  3/7 - 分析飞书用户")
-    print("  4/7 - 创建 AD 域新用户")
-    print("  5/7 - 更新 AD 域现有用户")
-    print("  6/7 - 下载生成的密码")
-    print("  7/7 - 完成同步")
+    print("  1/6 - 同步飞书部门结构到 AD 域")
+    print("  2/6 - 获取 AD 域现有用户")
+    print("  3/6 - 分析飞书用户")
+    print("  4/6 - 创建新用户、下载密码并发送邮件")
+    print("  5/6 - 更新 AD 域现有用户")
+    print("  6/6 - 完成同步")
     print("")
     
     # 0. 检查飞书数据文件，如果不存在或使用-y参数则自动获取
@@ -1062,7 +1051,7 @@ if __name__ == "__main__":
     fetch_script = os.path.join(SCRIPT_DIR, 'fetch_feishu_data.py')
     
     if AUTO_YES or not os.path.exists(feishu_users_csv) or not os.path.exists(feishu_depts_csv):
-        print("\n【步骤 0/7】获取飞书数据")
+        print("\n【步骤 0/6】获取飞书数据")
         if AUTO_YES:
             print("自动确认模式：强制重新获取飞书数据...")
         else:
@@ -1087,25 +1076,19 @@ if __name__ == "__main__":
     upload_dc_config()
     
     # 1. 同步部门OU结构
-    print("\n【步骤 1/7】同步飞书部门结构到 AD 域")
-    if DRY_RUN or confirm("是否同步飞书部门结构到 AD 域？"):
-        sync_departments()
-    else:
-        print("跳过部门同步")
+    print("\n【步骤 1/6】同步飞书部门结构到 AD 域")
+    sync_departments()
     
     # 2. 获取现有AD用户
-    print("\n【步骤 2/7】获取 AD 域现有用户")
+    print("\n【步骤 2/6】获取 AD 域现有用户")
     if DRY_RUN:
         print("[DRY-RUN] 正在获取现有用户...")
     existing_users, users_without_union_id = get_existing_ad_users()
     
     # 3. 分类飞书用户
-    print("\n【步骤 3/7】分析飞书用户")
+    print("\n【步骤 3/6】分析飞书用户")
     if DRY_RUN:
         print("[DRY-RUN] 分析飞书用户并生成同步计划")
-    elif not confirm("是否分析飞书用户并生成同步计划？"):
-        print("已取消")
-        sys.exit(0)
     
     new_users, update_users, matched_ad_users, matched_ad_users_no_uid = split_users_for_sync(feishu_users_csv, existing_users, users_without_union_id)
     new_count, update_count = create_csv_files(new_users, update_users)
@@ -1163,29 +1146,24 @@ if __name__ == "__main__":
     # 4. 执行新建
     actual_new_count = 0
     if new_count > 0:
-        print(f"\n【步骤 4/7】创建 AD 域新用户 ({new_count} 个)")
-        if DRY_RUN or confirm(f"是否创建 {new_count} 个新用户？"):
-            actual_new_count = execute_on_dc('CreateAccounts', get_output_path('ad_new_accounts.csv'), get_ps_path('create_users.ps1'), use_local=True)
-            if not DRY_RUN:
-                download_passwords()
-        else:
-            print("跳过创建")
+        print(f"\n【步骤 4/6】创建新用户、下载密码并发送邮件 ({new_count} 个)")
+        actual_new_count = execute_on_dc('CreateAccounts', get_output_path('ad_new_accounts.csv'), get_ps_path('create_users.ps1'), use_local=True)
+        # 创建成功后立即下载密码
+        if actual_new_count > 0 and not DRY_RUN:
+            download_passwords()
     
     # 5. 执行更新
     actual_update_count = 0
     if update_count > 0:
-        print(f"\n【步骤 5/7】检查并更新 AD 域现有用户 ({update_count} 个)")
-        if DRY_RUN or confirm(f"是否检查并更新 {update_count} 个现有用户的信息？"):
-            actual_update_count = execute_on_dc('UpdateAccounts', get_output_path('ad_update_accounts.csv'), get_ps_path('update_users.ps1'), use_local=True)
-        else:
-            print("跳过更新")
+        print(f"\n【步骤 5/6】检查并更新 AD 域现有用户 ({update_count} 个)")
+        actual_update_count = execute_on_dc('UpdateAccounts', get_output_path('ad_update_accounts.csv'), get_ps_path('update_users.ps1'), use_local=True)
     
     print("\n" + "=" * 50)
     if DRY_RUN:
         print("  DRY-RUN 完成 - 未执行实际操作")
         print("  以上为基于 AD 域真实数据的同步预览")
     else:
-        print("  【步骤 7/7】同步完成")
+        print("  【步骤 6/6】同步完成")
     print("=" * 50)
     
     # 显示实际处理的数量

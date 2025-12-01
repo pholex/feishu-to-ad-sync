@@ -33,7 +33,7 @@ try {
     if ($filteredUsers) {
         # 导出到CSV
         $filteredUsers | Select-Object SamAccountName, EmailAddress, Mobile, EmployeeID, EmployeeNumber, info, DisplayName, Enabled | 
-            Export-Csv -Path $csvFilePath -NoTypeInformation -Encoding Default
+            Export-Csv -Path $csvFilePath -NoTypeInformation -Encoding UTF8
         
         Write-Host "成功导出 $($filteredUsers.Count) 个用户（已排除'其它'OU）" -ForegroundColor Green
     } else {
