@@ -16,6 +16,7 @@ def send_password_email(receiver_email, new_password, sam_account='', display_na
     smtp_server = os.getenv("EMAIL_SMTP_SERVER")
     smtp_port = int(os.getenv("EMAIL_SMTP_PORT", "465"))
     bcc_emails = os.getenv("EMAIL_BCC", "").strip()
+    additional_content = os.getenv("EMAIL_ADDITIONAL_CONTENT", "").strip()
     
     # 提取登录用的纯邮箱地址（如果 sender_email 包含显示名称）
     if '<' in sender_email and '>' in sender_email:
@@ -90,6 +91,8 @@ def send_password_email(receiver_email, new_password, sam_account='', display_na
                 <ul>
                     <li>请妥善保管您的密码，不要与他人分享</li>
                 </ul>
+                
+                {additional_content}
                 
                 <div class="footer">
                     <p>此邮件由系统自动发送，请勿回复。</p>

@@ -110,7 +110,7 @@ try {
                     Enabled = $true
                     Path = $ouPath
                     PasswordNeverExpires = $false
-                    ChangePasswordAtLogon = $true
+                    ChangePasswordAtLogon = $false
                 }
                 
                 New-ADUser @newUserParams
