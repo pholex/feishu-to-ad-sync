@@ -69,8 +69,8 @@ def init_ssh_control_master():
     if SSH_CONTROL_MASTER_INITIALIZED:
         return
     
-    # 建立主连接（后台运行，保持10分钟）
-    cmd = f"sshpass -p '{DC_PASSWORD}' ssh -o StrictHostKeyChecking=no -o ControlMaster=yes -o ControlPath={SSH_CONTROL_PATH} -o ControlPersist=10m -fN {DC_USER}@{DC_HOST}"
+    # 建立主连接（后台运行，保持30分钟）
+    cmd = f"sshpass -p '{DC_PASSWORD}' ssh -o StrictHostKeyChecking=no -o ControlMaster=yes -o ControlPath={SSH_CONTROL_PATH} -o ControlPersist=30m -fN {DC_USER}@{DC_HOST}"
     try:
         subprocess.run(cmd, shell=True, capture_output=True, timeout=10)
         SSH_CONTROL_MASTER_INITIALIZED = True
@@ -1020,6 +1020,14 @@ def cleanup_remote_files():
         print("⚠ 清理远程文件时出现问题（可忽略）")
 
 if __name__ == "__main__":
+    # 清理旧的 SSH 控制套接字
+    import glob
+    for socket_file in glob.glob("/tmp/ssh-feishu-ad-sync-*"):
+        try:
+            os.remove(socket_file)
+        except:
+            pass
+    
     # 检查命令行参数
     for arg in sys.argv[1:]:
         if arg == '--dry-run':
