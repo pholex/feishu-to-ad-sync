@@ -69,8 +69,8 @@ def init_ssh_control_master():
     if SSH_CONTROL_MASTER_INITIALIZED:
         return
     
-    # 建立主连接（后台运行，保持30分钟）
-    cmd = f"sshpass -p '{DC_PASSWORD}' ssh -o StrictHostKeyChecking=no -o ControlMaster=yes -o ControlPath={SSH_CONTROL_PATH} -o ControlPersist=30m -fN {DC_USER}@{DC_HOST}"
+    # 建立主连接（后台运行，保持5分钟）
+    cmd = f"sshpass -p '{DC_PASSWORD}' ssh -o StrictHostKeyChecking=no -o ControlMaster=yes -o ControlPath={SSH_CONTROL_PATH} -o ControlPersist=5m -fN {DC_USER}@{DC_HOST}"
     try:
         subprocess.run(cmd, shell=True, capture_output=True, timeout=10)
         SSH_CONTROL_MASTER_INITIALIZED = True
