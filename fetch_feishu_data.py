@@ -5,6 +5,7 @@ import csv
 import os
 import time
 import threading
+import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Lock
 from dotenv import load_dotenv
@@ -38,6 +39,12 @@ def name_to_pinyin(name):
         surname = pinyin_list[0].lower()
         given_name = "".join(pinyin_list[1:]).lower()
         return f"{given_name}.{surname}"
+
+def generate_uuid_from_email(email):
+    """根据邮箱生成固定的 UUID"""
+    if not email:
+        return ""
+    return str(uuid.uuid5(uuid.NAMESPACE_DNS, email.lower()))
 
 def request_with_retry(method, url, **kwargs):
     """带重试的请求"""
@@ -247,7 +254,7 @@ def export_to_csv(users, dept_map):
     
     with open(output_file, "w", newline="", encoding="utf-8-sig") as f:
         writer = csv.writer(f)
-        writer.writerow(["用户ID", "Union ID", "姓名", "拼音", "企业邮箱", "手机号", "工号", "状态", "dept_id", "dept_name", "所有部门ID", "所有部门名称"])
+        writer.writerow(["用户ID", "Union ID", "UUID", "姓名", "拼音", "企业邮箱", "手机号", "工号", "状态", "dept_id", "dept_name", "所有部门ID", "所有部门名称"])
         
         for user in users:
             # 排除冻结和离职用户
@@ -263,6 +270,7 @@ def export_to_csv(users, dept_map):
             name = user.get("name", "")
             pinyin = name_to_pinyin(name)
             enterprise_email = user.get("enterprise_email", "")
+            user_uuid = generate_uuid_from_email(enterprise_email)
             mobile = user.get("mobile", "")
             employee_no = user.get("employee_no", "")
             
@@ -285,7 +293,7 @@ def export_to_csv(users, dept_map):
             for did in department_ids:
                 dept_user_count[did] = dept_user_count.get(did, 0) + 1
             
-            writer.writerow([user_id, union_id, name, pinyin, enterprise_email, mobile, employee_no, status, dept_id, dept_name, all_dept_ids, all_dept_names])
+            writer.writerow([user_id, union_id, user_uuid, name, pinyin, enterprise_email, mobile, employee_no, status, dept_id, dept_name, all_dept_ids, all_dept_names])
     
     print(f"已导出 {len(users)} 个用户到 {output_file}")
     

@@ -47,6 +47,7 @@ try {
         $email = [string]$user.EmailAddress
         $employeeID = [string]$user.EmployeeID
         $employeeNumber = [string]$user.EmployeeNumber
+        $description = [string]$user.Description
         $deptName = [string]$user.DepartmentName
         
         # 构建期望的 OU 路径
@@ -60,7 +61,7 @@ try {
         
         try {
             # 获取现有用户
-            $adUser = Get-ADUser -Identity $samAccountName -Properties DisplayName, EmailAddress, EmployeeID, EmployeeNumber -ErrorAction Stop
+            $adUser = Get-ADUser -Identity $samAccountName -Properties DisplayName, EmailAddress, EmployeeID, EmployeeNumber, Description -ErrorAction Stop
             
             # 准备更新参数
             $updateParams = @{Identity = $adUser.DistinguishedName}
@@ -88,6 +89,12 @@ try {
             if ($employeeNumber -and $employeeNumber.Trim() -ne "" -and $adUser.EmployeeNumber -ne $employeeNumber) {
                 $updateParams.Add("EmployeeNumber", $employeeNumber)
                 $changes += "EmployeeNumber: '$($adUser.EmployeeNumber)' -> '$employeeNumber'"
+            }
+            
+            # 检查 Description
+            if ($description -and $description.Trim() -ne "" -and $adUser.Description -ne $description) {
+                $updateParams.Add("Description", $description)
+                $changes += "Description: '$($adUser.Description)' -> '$description'"
             }
             
             # 检查用户所在OU是否需要移动

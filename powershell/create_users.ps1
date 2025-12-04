@@ -49,6 +49,7 @@ try {
         $email = [string]$user.EmailAddress
         $employeeID = [string]$user.EmployeeID
         $employeeNumber = [string]$user.EmployeeNumber
+        $description = [string]$user.Description
         $deptName = [string]$user.DepartmentName
         
         # 构建 OU 路径
@@ -106,6 +107,7 @@ try {
                     EmailAddress = $email
                     EmployeeID = $employeeID
                     EmployeeNumber = $employeeNumber
+                    Description = $description
                     AccountPassword = $securePassword
                     Enabled = $true
                     Path = $ouPath
