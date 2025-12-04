@@ -107,6 +107,7 @@ python3 sync_to_ad.py
 | 手机号 | Mobile | 手机号码 |
 | 工号 | EmployeeID | 员工工号 |
 | Union ID | EmployeeNumber | 飞书唯一标识 |
+| UUID（邮箱生成） | info | 基于邮箱的固定 UUID |
 
 ## 注意事项
 

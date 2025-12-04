@@ -668,7 +668,7 @@ def split_users_for_sync(feishu_csv, existing_users, users_without_union_id):
                 'EmailAddress': email,
                 'EmployeeID': employee_no,
                 'EmployeeNumber': union_id,
-                'Description': user_uuid,
+                'info': user_uuid,
                 'DepartmentName': dept_path
             })
         else:
@@ -679,7 +679,7 @@ def split_users_for_sync(feishu_csv, existing_users, users_without_union_id):
                 'EmailAddress': email,
                 'EmployeeID': employee_no,
                 'EmployeeNumber': union_id,
-                'Description': user_uuid,
+                'info': user_uuid,
                 'DepartmentName': dept_path
             })
     
@@ -690,7 +690,7 @@ def create_csv_files(new_users, update_users):
     # 新建用户CSV
     if new_users:
         with open(get_output_path('ad_new_accounts.csv'), 'w', newline='', encoding='utf-8-sig') as f:
-            writer = csv.DictWriter(f, fieldnames=['DisplayName', 'SamAccountName', 'EmailAddress', 'EmployeeID', 'EmployeeNumber', 'Description', 'DepartmentName'])
+            writer = csv.DictWriter(f, fieldnames=['DisplayName', 'SamAccountName', 'EmailAddress', 'EmployeeID', 'EmployeeNumber', 'info', 'DepartmentName'])
             writer.writeheader()
             writer.writerows(new_users)
         print(f"  - 待创建用户: {len(new_users)} 个")
@@ -698,7 +698,7 @@ def create_csv_files(new_users, update_users):
     # 更新用户CSV
     if update_users:
         with open(get_output_path('ad_update_accounts.csv'), 'w', newline='', encoding='utf-8-sig') as f:
-            writer = csv.DictWriter(f, fieldnames=['SamAccountName', 'DisplayName', 'EmailAddress', 'EmployeeID', 'EmployeeNumber', 'Description', 'DepartmentName'])
+            writer = csv.DictWriter(f, fieldnames=['SamAccountName', 'DisplayName', 'EmailAddress', 'EmployeeID', 'EmployeeNumber', 'info', 'DepartmentName'])
             writer.writeheader()
             writer.writerows(update_users)
         print(f"  - 待检查用户: {len(update_users)} 个（实际更新数量取决于字段差异）")

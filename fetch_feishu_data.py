@@ -23,12 +23,36 @@ FEISHU_COMPANY_NAME = os.getenv("FEISHU_COMPANY_NAME", "公司")  # 默认值为
 MAX_RETRIES = 3
 RETRY_DELAY = 5  # 秒
 
+# 姓氏多音字映射（作为姓氏时的正确读音）
+SURNAME_PINYIN = {
+    '曾': 'zeng',
+    '卜': 'bu',
+    '区': 'ou',
+    '查': 'zha',
+    '单': 'shan',
+    '朴': 'piao',
+    '仇': 'qiu',
+    '黑': 'he',
+    '盖': 'ge',
+    '种': 'chong',
+    '繁': 'po',
+    '召': 'shao',
+}
+
 def name_to_pinyin(name):
     """将中文姓名转换为拼音（名.姓格式）"""
     if not name:
         return ""
+    
+    # 先替换多音字为姓氏读音
+    for char, pinyin in SURNAME_PINYIN.items():
+        name = name.replace(char, f'[{pinyin}]')
+    
     # 转换为拼音
     pinyin_list = lazy_pinyin(name, style=Style.NORMAL)
+    
+    # 还原替换的拼音
+    pinyin_list = [p.strip('[]') for p in pinyin_list]
     
     if len(pinyin_list) == 0:
         return ""
