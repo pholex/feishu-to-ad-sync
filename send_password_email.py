@@ -43,7 +43,7 @@ def send_password_email(receiver_email, new_password, sam_account='', display_na
         <meta charset="UTF-8">
         <style>
             body {{ font-family: Arial, 'Microsoft YaHei', sans-serif; line-height: 1.6; color: #333; }}
-            .container {{ max-width: 600px; margin: 20px auto; padding: 20px; border: 1px solid #ddd; border-radius: 5px; }}
+            .container {{ max-width: 800px; margin: 20px auto; padding: 20px; border: 1px solid #ddd; border-radius: 5px; }}
             .header {{ background-color: #4CAF50; color: white; padding: 15px; border-radius: 5px 5px 0 0; text-align: center; }}
             .content {{ padding: 20px; background-color: #f9f9f9; }}
             .info-box {{ background-color: white; padding: 15px; margin: 15px 0; border-left: 4px solid #4CAF50; }}
