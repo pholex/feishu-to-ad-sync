@@ -208,7 +208,7 @@ def get_all_users(token, dept_ids_list):
     timer_thread = threading.Thread(target=show_startup_time, daemon=True)
     timer_thread.start()
     
-    with ThreadPoolExecutor(max_workers=25) as executor:
+    with ThreadPoolExecutor(max_workers=20) as executor:
         future_to_dept = {executor.submit(get_users_by_department, token, dept_id, retry_counter): dept_id 
                          for dept_id in dept_ids}
         
