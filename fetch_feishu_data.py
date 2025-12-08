@@ -503,8 +503,6 @@ if __name__ == "__main__":
                             
                             with open(env_file, 'w', encoding='utf-8') as f:
                                 f.writelines(lines)
-                            
-                            print(f"已更新 .env 文件中的企业名称: {tenant_name}")
         except Exception as e:
             print(f"获取企业名称失败: {e}")
         
