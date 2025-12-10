@@ -1199,6 +1199,8 @@ if __name__ == "__main__":
                 "title": "飞书用户同步AD域完成",
                 "content": notify_content
             })
+            print("✓ 青龙系统通知已发送")
     except NameError:
         # 不在青龙环境中，跳过通知
+        print("⚠ 未检测到青龙环境，跳过系统通知")
         pass
