@@ -1208,7 +1208,58 @@ if __name__ == "__main__":
     # 发送青龙通知（如果在青龙环境中运行）
     try:
         if not DRY_RUN and (actual_new_count > 0 or actual_update_count > 0 or actual_resign_count > 0):
-            notify_content = f"新建: {actual_new_count}\n更新: {actual_update_count}\n禁用: {actual_resign_count}"
+            notify_lines = []
+            
+            # 新建用户
+            if actual_new_count > 0:
+                try:
+                    with open(get_output_path('ad_new_accounts.csv'), 'r', encoding='utf-8-sig') as f:
+                        reader = csv.DictReader(f)
+                        new_names = [row['DisplayName'] for row in reader][:5]
+                        if new_names:
+                            names_str = ', '.join(new_names)
+                            if actual_new_count > 5:
+                                names_str += f"等{actual_new_count}个"
+                            notify_lines.append(f"新建: {names_str}")
+                        else:
+                            notify_lines.append(f"新建: {actual_new_count}个")
+                except:
+                    notify_lines.append(f"新建: {actual_new_count}个")
+            
+            # 更新用户
+            if actual_update_count > 0:
+                try:
+                    with open(get_output_path('ad_update_accounts.csv'), 'r', encoding='utf-8-sig') as f:
+                        reader = csv.DictReader(f)
+                        update_names = [row['DisplayName'] for row in reader][:5]
+                        if update_names:
+                            names_str = ', '.join(update_names)
+                            if actual_update_count > 5:
+                                names_str += f"等{actual_update_count}个"
+                            notify_lines.append(f"更新: {names_str}")
+                        else:
+                            notify_lines.append(f"更新: {actual_update_count}个")
+                except:
+                    notify_lines.append(f"更新: {actual_update_count}个")
+            
+            # 禁用用户
+            if actual_resign_count > 0:
+                try:
+                    with open(get_output_path('ad_unmatched_users.csv'), 'r', encoding='utf-8-sig') as f:
+                        reader = csv.DictReader(f)
+                        resign_names = [row['DisplayName'] for row in reader][:5]
+                        if resign_names:
+                            names_str = ', '.join(resign_names)
+                            if actual_resign_count > 5:
+                                names_str += f"等{actual_resign_count}个"
+                            notify_lines.append(f"禁用: {names_str}")
+                        else:
+                            notify_lines.append(f"禁用: {actual_resign_count}个")
+                except:
+                    notify_lines.append(f"禁用: {actual_resign_count}个")
+            
+            notify_content = '\n'.join(notify_lines)
+            
             QLAPI.systemNotify({
                 "title": "飞书用户同步AD域完成",
                 "content": notify_content
