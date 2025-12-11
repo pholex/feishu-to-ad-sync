@@ -8,6 +8,20 @@ import time
 from datetime import datetime
 from dotenv import load_dotenv
 
+# 修复青龙环境 - 确保QLAPI可用
+ql_dir = os.getenv('QL_DIR')
+if ql_dir and os.path.exists(ql_dir):
+    preload_dir = os.path.join(ql_dir, 'shell', 'preload')
+    if os.path.exists(preload_dir) and preload_dir not in sys.path:
+        sys.path.insert(0, preload_dir)
+        try:
+            import client
+            import builtins
+            if not hasattr(builtins, 'QLAPI'):
+                builtins.QLAPI = client.Client()
+        except ImportError:
+            pass  # 非青龙环境，忽略
+
 # 获取脚本所在目录
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -1200,7 +1214,9 @@ if __name__ == "__main__":
                 "content": notify_content
             })
             print("✓ 青龙系统通知已发送")
-    except NameError:
+    except (NameError, AttributeError):
         # 不在青龙环境中，跳过通知
         print("⚠ 未检测到青龙环境，跳过系统通知")
-        pass
+    except Exception as e:
+        # 其他错误（如网络问题等）
+        print(f"⚠ 系统通知发送失败: {e}")
