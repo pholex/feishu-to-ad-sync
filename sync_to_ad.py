@@ -711,7 +711,7 @@ def create_csv_files(new_users, update_users):
     
     # 更新用户CSV
     if update_users:
-        with open(get_output_path('ad_update_accounts.csv'), 'w', newline='', encoding='utf-8-sig') as f:
+        with open(get_output_path('ad_check_accounts.csv'), 'w', newline='', encoding='utf-8-sig') as f:
             writer = csv.DictWriter(f, fieldnames=['SamAccountName', 'DisplayName', 'EmailAddress', 'EmployeeID', 'EmployeeNumber', 'info', 'DepartmentName'])
             writer.writeheader()
             writer.writerows(update_users)
@@ -821,6 +821,22 @@ def execute_on_dc(operation, csv_file, ps_script, use_local=False):
                 pass
     
     return actual_count
+
+def download_file_from_dc(remote_filename, local_path):
+    """从域控制器下载文件"""
+    try:
+        scp_cmd = f"sshpass -p '{DC_PASSWORD}' scp -o ControlPath={SSH_CONTROL_PATH} {DC_USER}@{DC_HOST}:~/{remote_filename} {local_path}"
+        result = run_scp_with_retry(scp_cmd)
+        
+        if result.returncode == 0:
+            print(f"✓ 已下载: {remote_filename}")
+            return True
+        else:
+            print(f"✗ 下载失败: {remote_filename} - {result.stderr.decode('utf-8', errors='ignore')}")
+            return False
+    except Exception as e:
+        print(f"✗ 下载异常: {remote_filename} - {e}")
+        return False
 
 def download_passwords():
     """下载生成的密码文件并发送邮件"""
@@ -1020,7 +1036,8 @@ def cleanup_remote_files():
         'feishu_users_new.csv',
         'feishu_users_update.csv',
         'ad_new_accounts.csv',
-        'ad_update_accounts.csv',
+        'ad_check_accounts.csv',
+        'ad_updated_accounts.csv',
         'GeneratedPasswords.csv'
     ]
     
@@ -1181,7 +1198,11 @@ if __name__ == "__main__":
     actual_update_count = 0
     if update_count > 0:
         print(f"\n【步骤 5/6】检查并更新 AD 域现有用户 ({update_count} 个)")
-        actual_update_count = execute_on_dc('UpdateAccounts', get_output_path('ad_update_accounts.csv'), get_ps_path('update_users.ps1'), use_local=True)
+        actual_update_count = execute_on_dc('UpdateAccounts', get_output_path('ad_check_accounts.csv'), get_ps_path('update_users.ps1'), use_local=True)
+        
+        # 下载实际更新成功的用户文件（非DRY_RUN模式且有更新时）
+        if actual_update_count > 0 and not DRY_RUN:
+            download_file_from_dc('ad_updated_accounts.csv', get_output_path('ad_updated_accounts.csv'))
     
     print("\n" + "=" * 50)
     if DRY_RUN:
@@ -1229,17 +1250,50 @@ if __name__ == "__main__":
             # 更新用户
             if actual_update_count > 0:
                 try:
-                    with open(get_output_path('ad_update_accounts.csv'), 'r', encoding='utf-8-sig') as f:
-                        reader = csv.DictReader(f)
-                        update_names = [row['DisplayName'] for row in reader][:5]
-                        if update_names:
-                            names_str = ', '.join(update_names)
-                            if actual_update_count > 5:
-                                names_str += f"等{actual_update_count}个"
-                            notify_lines.append(f"更新: {names_str}")
-                        else:
+                    # 优先从实际更新成功的文件读取
+                    success_file = get_output_path('ad_updated_accounts.csv')
+                    if os.path.exists(success_file):
+                        try:
+                            with open(success_file, 'r', encoding='utf-8-sig') as f:
+                                reader = csv.DictReader(f)
+                                update_details = []
+                                for i, row in enumerate(reader):
+                                    if i < 5:  # 只显示前5个
+                                        name = row.get('DisplayName', '未知用户')
+                                        changes = row.get('Changes', '无变更信息')
+                                        update_details.append(f"{name} ({changes})")
+                                    else:
+                                        break
+                            
+                            if update_details:
+                                details_str = '\n'.join(update_details)
+                                if actual_update_count > 5:
+                                    details_str += f"\n...等共{actual_update_count}个用户"
+                                notify_lines.append(f"更新:\n{details_str}")
+                            else:
+                                notify_lines.append(f"更新: {actual_update_count}个")
+                        except Exception as e:
+                            print(f"读取更新成功文件失败: {e}")
                             notify_lines.append(f"更新: {actual_update_count}个")
-                except:
+                    else:
+                        # 如果没有成功文件，从检查文件读取（向后兼容）
+                        try:
+                            with open(get_output_path('ad_check_accounts.csv'), 'r', encoding='utf-8-sig') as f:
+                                reader = csv.DictReader(f)
+                                update_names = [row.get('DisplayName', '未知用户') for row in reader][:5]
+                            
+                            if update_names:
+                                names_str = ', '.join(update_names)
+                                if actual_update_count > 5:
+                                    names_str += f"等{actual_update_count}个"
+                                notify_lines.append(f"更新: {names_str}")
+                            else:
+                                notify_lines.append(f"更新: {actual_update_count}个")
+                        except Exception as e:
+                            print(f"读取检查文件失败: {e}")
+                            notify_lines.append(f"更新: {actual_update_count}个")
+                except Exception as e:
+                    print(f"处理更新通知失败: {e}")
                     notify_lines.append(f"更新: {actual_update_count}个")
             
             # 禁用用户

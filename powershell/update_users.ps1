@@ -20,8 +20,9 @@ if (Test-Path $configPath) {
 $BaseOU = $DC_BASE_OU
 
 # CSV文件路径
-$csvPath = "$env:USERPROFILE\ad_update_accounts.csv"
+$csvPath = "$env:USERPROFILE\ad_check_accounts.csv"
 $failuresCsvPath = "$env:USERPROFILE\UpdateAccountFailures.csv"
+$successCsvPath = "$env:USERPROFILE\ad_updated_accounts.csv"
 
 if ($DryRun) {
     Write-Host "`n===== 更新用户 [DRY-RUN] =====" -ForegroundColor Cyan
@@ -36,6 +37,7 @@ $successCount = 0
 $failureCount = 0
 $skippedCount = 0
 $failures = @()
+$successes = @()
 
 try {
     $users = Import-Csv -Path $csvPath -Encoding UTF8
@@ -130,6 +132,17 @@ try {
                     }
                     Write-Host "✓ 更新成功: $samAccountName $displayName ($changesList)" -ForegroundColor Green
                     $successCount++
+                    
+                    # 记录成功更新的用户
+                    $successes += [PSCustomObject]@{
+                        SamAccountName = $samAccountName
+                        DisplayName = $displayName
+                        EmailAddress = $email
+                        EmployeeID = $employeeID
+                        EmployeeNumber = $employeeNumber
+                        DepartmentName = $deptName
+                        Changes = $changesList
+                    }
                 }
             } else {
                 if ($DryRun) {
@@ -157,6 +170,12 @@ try {
     if (-not $DryRun -and $failures.Count -gt 0) {
         $failures | Export-Csv -Path $failuresCsvPath -NoTypeInformation -Encoding UTF8
         Write-Host "`n失败详情已导出至: $failuresCsvPath" -ForegroundColor Red
+    }
+    
+    # 导出成功更新列表
+    if (-not $DryRun -and $successes.Count -gt 0) {
+        $successes | Export-Csv -Path $successCsvPath -NoTypeInformation -Encoding UTF8
+        Write-Host "成功更新详情已导出至: $successCsvPath" -ForegroundColor Green
     }
     
     Write-Host "`n===== 处理完成 =====" -ForegroundColor Cyan
