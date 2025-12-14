@@ -620,20 +620,20 @@ def split_users_for_sync(feishu_csv, existing_users, users_without_union_id):
     # 检测拼音重名
     pinyin_count = {}
     for user in feishu_users_list:
-        pinyin = user['拼音']
+        pinyin = user['pinyin']
         if pinyin not in pinyin_count:
             pinyin_count[pinyin] = []
         pinyin_count[pinyin].append(user)
     
     # 为每个用户确定 SamAccountName
     for row in feishu_users_list:
-        pinyin = row['拼音']
-        user_id = row['用户ID']  # 用户ID
-        union_id = row.get('Union ID', '')  # Union ID
-        user_uuid = row.get('UUID', '')  # UUID
-        employee_no = row['工号']  # 工号
-        display_name = row['姓名']
-        email = row['企业邮箱']
+        pinyin = row['pinyin']
+        user_id = row['user_id']  # 用户ID
+        union_id = row.get('union_id', '')  # Union ID
+        user_uuid = row.get('uuid', '')  # UUID
+        employee_no = row['employee_no']  # 工号
+        display_name = row['name']
+        email = row['enterprise_email']
         dept_id = row.get('dept_id', '')
         
         # 从部门ID获取完整部门路径
@@ -645,13 +645,13 @@ def split_users_for_sync(feishu_csv, existing_users, users_without_union_id):
         # 确定 SamAccountName：拼音重名时，按工号排序
         elif len(pinyin_count[pinyin]) > 1:
             # 拼音重名，按工号排序，工号最小的用拼音，其他加序号
-            sorted_users = sorted(pinyin_count[pinyin], key=lambda x: x['工号'])
-            if employee_no == sorted_users[0]['工号']:
+            sorted_users = sorted(pinyin_count[pinyin], key=lambda x: x['employee_no'])
+            if employee_no == sorted_users[0]['employee_no']:
                 sam_account = pinyin  # 工号最小，用拼音
             else:
                 # 工号较大，在名字后、姓氏前加序号（从1开始）
                 # 例如：jiayi.wang -> jiayi1.wang
-                index = next(i for i, u in enumerate(sorted_users) if u['工号'] == employee_no)
+                index = next(i for i, u in enumerate(sorted_users) if u['employee_no'] == employee_no)
                 parts = pinyin.split('.')
                 if len(parts) == 2:
                     sam_account = f"{parts[0]}{index}.{parts[1]}"

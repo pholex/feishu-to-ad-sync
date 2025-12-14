@@ -278,7 +278,7 @@ def export_to_csv(users, dept_map):
     
     with open(output_file, "w", newline="", encoding="utf-8-sig") as f:
         writer = csv.writer(f)
-        writer.writerow(["用户ID", "Union ID", "UUID", "姓名", "拼音", "企业邮箱", "手机号", "工号", "状态", "dept_id", "dept_name", "所有部门ID", "所有部门名称"])
+        writer.writerow(["user_id", "union_id", "uuid", "name", "pinyin", "enterprise_email", "mobile", "employee_no", "status", "dept_id", "dept_name", "department_ids", "department_names"])
         
         for user in users:
             # 排除冻结和离职用户

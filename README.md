@@ -99,15 +99,15 @@ python3 sync_to_ad.py
 
 ## 字段映射
 
-| 飞书字段 | AD 字段 | 说明 |
-|---------|---------|------|
-| 姓名 | DisplayName | 显示名称 |
-| 拼音 | SamAccountName | 登录账号 |
-| 企业邮箱 | EmailAddress | 邮箱地址 |
-| 手机号 | Mobile | 手机号码 |
-| 工号 | EmployeeID | 员工工号 |
-| Union ID | EmployeeNumber | 飞书唯一标识 |
-| UUID（邮箱生成） | info | 基于邮箱的固定 UUID |
+| CSV字段名 | AD字段 | 飞书API字段 | 说明 |
+|----------|--------|------------|------|
+| name | DisplayName | name | 显示名称 |
+| pinyin | SamAccountName | - | 登录账号（代码生成） |
+| enterprise_email | EmailAddress | enterprise_email | 邮箱地址 |
+| mobile | Mobile | mobile | 手机号码 |
+| employee_no | EmployeeID | employee_no | 员工工号 |
+| union_id | EmployeeNumber | union_id | 飞书唯一标识 |
+| uuid | info | - | 基于邮箱的固定UUID（代码生成） |
 
 ## 注意事项
 
