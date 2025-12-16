@@ -1241,11 +1241,11 @@ if __name__ == "__main__":
                             names_str = ', '.join(new_names)
                             if actual_new_count > 5:
                                 names_str += f"等{actual_new_count}个"
-                            notify_lines.append(f"新建: {names_str}")
+                            notify_lines.append(f"用户新建: {names_str}")
                         else:
-                            notify_lines.append(f"新建: {actual_new_count}个")
+                            notify_lines.append(f"用户新建: {actual_new_count}个")
                 except:
-                    notify_lines.append(f"新建: {actual_new_count}个")
+                    notify_lines.append(f"用户新建: {actual_new_count}个")
             
             # 更新用户
             if actual_update_count > 0:
@@ -1269,12 +1269,12 @@ if __name__ == "__main__":
                                 details_str = '\n'.join(update_details)
                                 if actual_update_count > 5:
                                     details_str += f"\n...等共{actual_update_count}个用户"
-                                notify_lines.append(f"更新:\n{details_str}")
+                                notify_lines.append(f"用户更新:\n{details_str}")
                             else:
-                                notify_lines.append(f"更新: {actual_update_count}个")
+                                notify_lines.append(f"用户更新: {actual_update_count}个")
                         except Exception as e:
                             print(f"读取更新成功文件失败: {e}")
-                            notify_lines.append(f"更新: {actual_update_count}个")
+                            notify_lines.append(f"用户更新: {actual_update_count}个")
                     else:
                         # 如果没有成功文件，从检查文件读取（向后兼容）
                         try:
@@ -1286,15 +1286,15 @@ if __name__ == "__main__":
                                 names_str = ', '.join(update_names)
                                 if actual_update_count > 5:
                                     names_str += f"等{actual_update_count}个"
-                                notify_lines.append(f"更新: {names_str}")
+                                notify_lines.append(f"用户更新: {names_str}")
                             else:
-                                notify_lines.append(f"更新: {actual_update_count}个")
+                                notify_lines.append(f"用户更新: {actual_update_count}个")
                         except Exception as e:
                             print(f"读取检查文件失败: {e}")
-                            notify_lines.append(f"更新: {actual_update_count}个")
+                            notify_lines.append(f"用户更新: {actual_update_count}个")
                 except Exception as e:
                     print(f"处理更新通知失败: {e}")
-                    notify_lines.append(f"更新: {actual_update_count}个")
+                    notify_lines.append(f"用户更新: {actual_update_count}个")
             
             # 禁用用户
             if actual_resign_count > 0:
@@ -1306,11 +1306,11 @@ if __name__ == "__main__":
                             names_str = ', '.join(resign_names)
                             if actual_resign_count > 5:
                                 names_str += f"等{actual_resign_count}个"
-                            notify_lines.append(f"禁用: {names_str}")
+                            notify_lines.append(f"用户禁用: {names_str}")
                         else:
-                            notify_lines.append(f"禁用: {actual_resign_count}个")
+                            notify_lines.append(f"用户禁用: {actual_resign_count}个")
                 except:
-                    notify_lines.append(f"禁用: {actual_resign_count}个")
+                    notify_lines.append(f"用户禁用: {actual_resign_count}个")
             
             notify_content = '\n'.join(notify_lines)
             
