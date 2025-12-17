@@ -60,6 +60,36 @@ def check_sshpass():
 
 check_sshpass()
 
+def format_ou_display(detail_text):
+    """转换OU显示格式为更易读的格式"""
+    # 匹配OU变更模式: OU: 'OU=xxx,OU=yyy,...' -> 'OU=aaa,OU=bbb,...'
+    ou_pattern = r"OU: '([^']+)' -> '([^']+)'"
+    match = re.search(ou_pattern, detail_text)
+    
+    if match:
+        old_ou = match.group(1)
+        new_ou = match.group(2)
+        
+        # 提取OU部分，跳过DC部分和员工基础OU
+        def extract_ou_path(ou_string):
+            parts = []
+            for part in ou_string.split(','):
+                if part.strip().startswith('OU='):
+                    ou_name = part.strip()[3:]  # 去掉'OU='前缀
+                    if ou_name != '员工':  # 跳过员工基础OU
+                        parts.append(ou_name)
+                elif part.strip().startswith('DC='):
+                    break  # 遇到DC就停止
+            return '\\'.join(reversed(parts))  # 反转顺序并用\连接
+        
+        old_path = extract_ou_path(old_ou)
+        new_path = extract_ou_path(new_ou)
+        
+        # 替换原文本中的OU部分
+        return detail_text.replace(f"OU: '{old_ou}' -> '{new_ou}'", f"OU: {old_path} -> {new_path}")
+    
+    return detail_text
+
 # 域控制器配置
 DC_HOST = os.getenv("DC_HOST")
 DC_USER = os.getenv("DC_USER")
@@ -1266,7 +1296,12 @@ if __name__ == "__main__":
                                         break
                             
                             if update_details:
-                                details_str = '\n'.join(update_details)
+                                # 转换OU显示格式
+                                formatted_details = []
+                                for detail in update_details:
+                                    formatted_details.append(format_ou_display(detail))
+                                
+                                details_str = '\n'.join(formatted_details)
                                 if actual_update_count > 5:
                                     details_str += f"\n...等共{actual_update_count}个用户"
                                 notify_lines.append(f"用户更新:\n{details_str}")
