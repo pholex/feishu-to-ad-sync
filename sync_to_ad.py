@@ -540,7 +540,8 @@ def get_existing_ad_users():
                 user_info = {
                     'SamAccountName': sam,
                     'DisplayName': row.get('DisplayName', ''),
-                    'EmailAddress': row.get('EmailAddress', '')
+                    'EmailAddress': row.get('EmailAddress', ''),
+                    'EmployeeID': row.get('EmployeeID', '')
                 }
                 
                 if employee_number:
@@ -565,7 +566,8 @@ def get_existing_ad_users():
                         user_info = {
                             'SamAccountName': sam,
                             'DisplayName': row.get('DisplayName', ''),
-                            'EmailAddress': row.get('EmailAddress', '')
+                            'EmailAddress': row.get('EmailAddress', ''),
+                            'EmployeeID': row.get('EmployeeID', '')
                         }
                         
                         if employee_number:
@@ -1182,7 +1184,8 @@ if __name__ == "__main__":
                 unmatched_users.append({
                     'SamAccountName': info['SamAccountName'],
                     'DisplayName': info['DisplayName'],
-                    'EmailAddress': info['EmailAddress']
+                    'EmailAddress': info['EmailAddress'],
+                    'EmployeeID': info.get('EmployeeID', '')
                 })
         
         # 未匹配的没有 Union ID 的用户
@@ -1191,11 +1194,12 @@ if __name__ == "__main__":
                 unmatched_users.append({
                     'SamAccountName': info['SamAccountName'],
                     'DisplayName': info['DisplayName'],
-                    'EmailAddress': info['EmailAddress']
+                    'EmailAddress': info['EmailAddress'],
+                    'EmployeeID': info.get('EmployeeID', '')
                 })
         
         with open(get_output_path('ad_unmatched_users.csv'), 'w', newline='', encoding='utf-8-sig') as f:
-            writer = csv.DictWriter(f, fieldnames=['SamAccountName', 'DisplayName', 'EmailAddress'])
+            writer = csv.DictWriter(f, fieldnames=['SamAccountName', 'DisplayName', 'EmailAddress', 'EmployeeID'])
             writer.writeheader()
             writer.writerows(unmatched_users)
         print(f"  - 未匹配用户列表已保存到: output/ad_unmatched_users.csv")
@@ -1266,7 +1270,13 @@ if __name__ == "__main__":
                 try:
                     with open(get_output_path('ad_new_accounts.csv'), 'r', encoding='utf-8-sig') as f:
                         reader = csv.DictReader(f)
-                        new_names = [row['DisplayName'] for row in reader][:5]
+                        new_names = []
+                        for i, row in enumerate(reader):
+                            if i >= 5:
+                                break
+                            name = row['DisplayName']
+                            emp_id = row.get('EmployeeID', '')
+                            new_names.append(f"{name}({emp_id})" if emp_id else name)
                         if new_names:
                             names_str = ', '.join(new_names)
                             if actual_new_count > 5:
@@ -1290,8 +1300,10 @@ if __name__ == "__main__":
                                 for i, row in enumerate(reader):
                                     if i < 5:  # 只显示前5个
                                         name = row.get('DisplayName', '未知用户')
+                                        emp_id = row.get('EmployeeID', '')
                                         changes = row.get('Changes', '无变更信息')
-                                        update_details.append(f"{name} ({changes})")
+                                        name_str = f"{name}({emp_id})" if emp_id else name
+                                        update_details.append(f"{name_str} ({changes})")
                                     else:
                                         break
                             
@@ -1315,7 +1327,13 @@ if __name__ == "__main__":
                         try:
                             with open(get_output_path('ad_check_accounts.csv'), 'r', encoding='utf-8-sig') as f:
                                 reader = csv.DictReader(f)
-                                update_names = [row.get('DisplayName', '未知用户') for row in reader][:5]
+                                update_names = []
+                                for i, row in enumerate(reader):
+                                    if i >= 5:
+                                        break
+                                    name = row.get('DisplayName', '未知用户')
+                                    emp_id = row.get('EmployeeID', '')
+                                    update_names.append(f"{name}({emp_id})" if emp_id else name)
                             
                             if update_names:
                                 names_str = ', '.join(update_names)
@@ -1336,7 +1354,13 @@ if __name__ == "__main__":
                 try:
                     with open(get_output_path('ad_unmatched_users.csv'), 'r', encoding='utf-8-sig') as f:
                         reader = csv.DictReader(f)
-                        resign_names = [row['DisplayName'] for row in reader][:5]
+                        resign_names = []
+                        for i, row in enumerate(reader):
+                            if i >= 5:
+                                break
+                            name = row['DisplayName']
+                            emp_id = row.get('EmployeeID', '')
+                            resign_names.append(f"{name}({emp_id})" if emp_id else name)
                         if resign_names:
                             names_str = ', '.join(resign_names)
                             if actual_resign_count > 5:
