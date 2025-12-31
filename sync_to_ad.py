@@ -90,6 +90,22 @@ def format_ou_display(detail_text):
     
     return detail_text
 
+def filter_info_changes(changes_text):
+    """过滤掉info字段的变更信息"""
+    if not changes_text:
+        return changes_text
+    
+    # 分割变更项
+    changes = [change.strip() for change in changes_text.split(',')]
+    
+    # 过滤掉info字段的变更
+    filtered_changes = []
+    for change in changes:
+        if not change.startswith("info: '"):
+            filtered_changes.append(change)
+    
+    return ', '.join(filtered_changes)
+
 # 域控制器配置
 DC_HOST = os.getenv("DC_HOST")
 DC_USER = os.getenv("DC_USER")
@@ -1302,8 +1318,11 @@ if __name__ == "__main__":
                                         name = row.get('DisplayName', '未知用户')
                                         emp_id = row.get('EmployeeID', '')
                                         changes = row.get('Changes', '无变更信息')
+                                        # 过滤掉info字段的变更信息
+                                        filtered_changes = filter_info_changes(changes)
                                         name_str = f"{name}({emp_id})" if emp_id else name
-                                        update_details.append(f"{name_str} ({changes})")
+                                        if filtered_changes:  # 只有在有有效变更时才显示
+                                            update_details.append(f"{name_str} ({filtered_changes})")
                                     else:
                                         break
                             
