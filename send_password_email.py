@@ -1,5 +1,6 @@
 import smtplib
 import os
+import html
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from dotenv import load_dotenv
@@ -82,7 +83,7 @@ def send_password_email(receiver_email, new_password, sam_account='', display_na
                         </tr>
                         <tr>
                             <td class="label">密码：</td>
-                            <td>{new_password}</td>
+                            <td>{html.escape(new_password)}</td>
                         </tr>
                     </table>
                 </div>
