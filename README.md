@@ -106,6 +106,7 @@ python3 sync_to_ad.py
 | enterprise_email | EmailAddress | enterprise_email | 邮箱地址 |
 | mobile | Mobile | mobile | 手机号码 |
 | employee_no | EmployeeID | employee_no | 员工工号 |
+| job_title | Title | job_title | 职务 |
 | union_id | EmployeeNumber | union_id | 飞书唯一标识 |
 | uuid | info | - | 基于邮箱的固定UUID（代码生成） |
 

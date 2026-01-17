@@ -278,7 +278,7 @@ def export_to_csv(users, dept_map):
     
     with open(output_file, "w", newline="", encoding="utf-8-sig") as f:
         writer = csv.writer(f)
-        writer.writerow(["user_id", "open_id", "union_id", "uuid", "name", "pinyin", "enterprise_email", "mobile", "employee_no", "status", "dept_id", "dept_name", "department_ids", "department_names"])
+        writer.writerow(["user_id", "open_id", "union_id", "uuid", "name", "pinyin", "enterprise_email", "mobile", "employee_no", "job_title", "status", "dept_id", "dept_name", "department_ids", "department_names"])
         
         for user in users:
             # 排除冻结和离职用户
@@ -298,6 +298,7 @@ def export_to_csv(users, dept_map):
             user_uuid = generate_uuid_from_email(enterprise_email)
             mobile = user.get("mobile", "")
             employee_no = user.get("employee_no", "")
+            job_title = user.get("job_title", "")
             
             # 获取用户状态信息
             is_activated = status_obj.get("is_activated", "")
@@ -318,7 +319,7 @@ def export_to_csv(users, dept_map):
             for did in department_ids:
                 dept_user_count[did] = dept_user_count.get(did, 0) + 1
             
-            writer.writerow([user_id, open_id, union_id, user_uuid, name, pinyin, enterprise_email, mobile, employee_no, status, dept_id, dept_name, all_dept_ids, all_dept_names])
+            writer.writerow([user_id, open_id, union_id, user_uuid, name, pinyin, enterprise_email, mobile, employee_no, job_title, status, dept_id, dept_name, all_dept_ids, all_dept_names])
     
     print(f"已导出 {len(users)} 个用户到 {output_file}")
     
