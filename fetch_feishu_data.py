@@ -553,6 +553,10 @@ if __name__ == "__main__":
         if total_fetched > len(users):
             print(f"  (其中 {total_fetched - len(users)} 个用户属于多个部门)")
         
+        # 检查是否获取到数据
+        if len(dept_map) == 0 or len(users) == 0:
+            raise Exception(f"飞书数据获取失败: 部门数={len(dept_map)}, 用户数={len(users)}，请检查飞书应用配置和IP白名单")
+        
         # 验证用户数据完整性 - 不一致视为失败
         if total_user_count is not None and len(users) != total_user_count:
             raise Exception(f"用户数据不完整: 实际获取{len(users)}个，企业总人数{total_user_count}个，差异{len(users) - total_user_count}个")
