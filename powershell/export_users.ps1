@@ -22,20 +22,20 @@ $ExcludeOU = $DC_EXCLUDE_OU
 $csvFilePath = "$env:USERPROFILE\ExportedUsers.csv"
 
 try {
-    # 获取所有启用的域用户
-    $users = Get-ADUser -Filter {Enabled -eq $true} -SearchBase $BaseOU -Properties SamAccountName, EmailAddress, Mobile, EmployeeID, EmployeeNumber, info, DisplayName, Enabled, DistinguishedName
+    # 获取所有域用户（包括禁用的）
+    $users = Get-ADUser -Filter * -SearchBase $BaseOU -Properties SamAccountName, EmailAddress, Mobile, EmployeeID, EmployeeNumber, info, DisplayName, Enabled, DistinguishedName
     
-    # 排除"其它"OU 及其子 OU 下的用户
+    # 排除指定 OU，但离职员工 OU 总是包含
     $filteredUsers = $users | Where-Object {
-        $_.DistinguishedName -notlike "*$ExcludeOU"
+        ($_.DistinguishedName -notlike "*$ExcludeOU") -or ($_.DistinguishedName -like "*$DC_RESIGNED_OU*")
     }
     
     if ($filteredUsers) {
         # 导出到CSV
-        $filteredUsers | Select-Object SamAccountName, EmailAddress, Mobile, EmployeeID, EmployeeNumber, info, DisplayName, Enabled | 
+        $filteredUsers | Select-Object SamAccountName, EmailAddress, Mobile, EmployeeID, EmployeeNumber, info, DisplayName, Enabled, DistinguishedName | 
             Export-Csv -Path $csvFilePath -NoTypeInformation -Encoding UTF8
         
-        Write-Host "成功导出 $($filteredUsers.Count) 个用户（已排除'其它'OU）" -ForegroundColor Green
+        Write-Host "成功导出 $($filteredUsers.Count) 个用户（已排除指定 OU）" -ForegroundColor Green
     } else {
         Write-Host "未找到用户" -ForegroundColor Yellow
     }

@@ -344,12 +344,16 @@ def get_ad_ou_count():
 def get_ad_user_count():
     """从AD实时获取用户数量"""
     if DC_BASE_OU:
-        filter_cmd = f"Get-ADUser -Filter {{Enabled -eq $true}} -SearchBase '{DC_BASE_OU}'"
+        filter_cmd = f"Get-ADUser -Filter * -SearchBase '{DC_BASE_OU}'"
     else:
-        filter_cmd = "Get-ADUser -Filter {Enabled -eq $true}"
+        filter_cmd = "Get-ADUser -Filter *"
     
     if DC_EXCLUDE_OU:
-        ps_script = f"{filter_cmd} | Where-Object {{$_.DistinguishedName -notlike '*{DC_EXCLUDE_OU}'}} | Measure-Object | Select-Object -ExpandProperty Count"
+        # 排除指定 OU，但离职员工 OU 总是包含
+        if DC_RESIGNED_OU:
+            ps_script = f"{filter_cmd} | Where-Object {{($_.DistinguishedName -notlike '*{DC_EXCLUDE_OU}') -or ($_.DistinguishedName -like '*{DC_RESIGNED_OU}*')}} | Measure-Object | Select-Object -ExpandProperty Count"
+        else:
+            ps_script = f"{filter_cmd} | Where-Object {{$_.DistinguishedName -notlike '*{DC_EXCLUDE_OU}'}} | Measure-Object | Select-Object -ExpandProperty Count"
     else:
         ps_script = f"{filter_cmd} | Measure-Object | Select-Object -ExpandProperty Count"
     
@@ -545,6 +549,7 @@ def get_existing_ad_users():
     # 读取现有用户的信息，使用 EmployeeNumber (Union ID) 作为键，没有则用 SamAccountName
     existing_users = {}
     users_without_union_id = {}  # 没有 Union ID 的用户，用 SamAccountName 作为键
+    disabled_count = 0  # 禁用用户计数
     
     try:
         # PowerShell 使用 UTF8 导出，直接使用 utf-8-sig
@@ -553,11 +558,19 @@ def get_existing_ad_users():
             for row in reader:
                 sam = row['SamAccountName']
                 employee_number = row.get('EmployeeNumber', '').strip()
+                enabled = row.get('Enabled', 'True').strip().lower() == 'true'
+                dn = row.get('DistinguishedName', '').strip()
+                
+                if not enabled:
+                    disabled_count += 1
+                
                 user_info = {
                     'SamAccountName': sam,
                     'DisplayName': row.get('DisplayName', ''),
                     'EmailAddress': row.get('EmailAddress', ''),
-                    'EmployeeID': row.get('EmployeeID', '')
+                    'EmployeeID': row.get('EmployeeID', ''),
+                    'Enabled': enabled,
+                    'DistinguishedName': dn
                 }
                 
                 if employee_number:
@@ -568,7 +581,7 @@ def get_existing_ad_users():
                     users_without_union_id[sam] = user_info
         
         total_users = len(existing_users) + len(users_without_union_id)
-        print(f"✓ 发现 {total_users} 个现有用户（{len(existing_users)} 个有 Union ID，{len(users_without_union_id)} 个无 Union ID）")
+        print(f"✓ 发现 {total_users} 个现有用户（{len(existing_users)} 个有 Union ID，{len(users_without_union_id)} 个无 Union ID，{disabled_count} 个禁用）")
     except Exception as e:
         print(f"读取现有用户列表失败: {e}")
         # 如果失败，尝试其他编码
@@ -1201,7 +1214,9 @@ if __name__ == "__main__":
                     'SamAccountName': info['SamAccountName'],
                     'DisplayName': info['DisplayName'],
                     'EmailAddress': info['EmailAddress'],
-                    'EmployeeID': info.get('EmployeeID', '')
+                    'EmployeeID': info.get('EmployeeID', ''),
+                    'Enabled': info.get('Enabled', True),
+                    'DistinguishedName': info.get('DistinguishedName', '')
                 })
         
         # 未匹配的没有 Union ID 的用户
@@ -1211,17 +1226,36 @@ if __name__ == "__main__":
                     'SamAccountName': info['SamAccountName'],
                     'DisplayName': info['DisplayName'],
                     'EmailAddress': info['EmailAddress'],
-                    'EmployeeID': info.get('EmployeeID', '')
+                    'EmployeeID': info.get('EmployeeID', ''),
+                    'Enabled': info.get('Enabled', True),
+                    'DistinguishedName': info.get('DistinguishedName', '')
                 })
         
-        with open(get_output_path('ad_unmatched_users.csv'), 'w', newline='', encoding='utf-8-sig') as f:
-            writer = csv.DictWriter(f, fieldnames=['SamAccountName', 'DisplayName', 'EmailAddress', 'EmployeeID'])
-            writer.writeheader()
-            writer.writerows(unmatched_users)
-        print(f"  - 未匹配用户列表已保存到: output/ad_unmatched_users.csv")
+        # 统计禁用用户数量
+        disabled_unmatched = sum(1 for u in unmatched_users if not u.get('Enabled', True))
         
-        # 询问是否处理未匹配用户
-        if not DRY_RUN and DC_RESIGNED_OU:
+        # 检查是否所有未匹配用户都已经是禁用且在离职员工 OU 中
+        all_already_resigned = all(
+            not u.get('Enabled', True) and DC_RESIGNED_OU in u.get('DistinguishedName', '')
+            for u in unmatched_users
+        ) if DC_RESIGNED_OU else False
+        
+        with open(get_output_path('ad_unmatched_users.csv'), 'w', newline='', encoding='utf-8-sig') as f:
+            writer = csv.DictWriter(f, fieldnames=['SamAccountName', 'DisplayName', 'EmailAddress', 'EmployeeID', 'Enabled'])
+            writer.writeheader()
+            # 不导出 DistinguishedName 到 CSV（太长）
+            for u in unmatched_users:
+                writer.writerow({
+                    'SamAccountName': u['SamAccountName'],
+                    'DisplayName': u['DisplayName'],
+                    'EmailAddress': u['EmailAddress'],
+                    'EmployeeID': u['EmployeeID'],
+                    'Enabled': u['Enabled']
+                })
+        print(f"  - 未匹配用户列表已保存到: output/ad_unmatched_users.csv（{disabled_unmatched} 个禁用）")
+        
+        # 询问是否处理未匹配用户（如果不是全部已经处理过）
+        if not DRY_RUN and DC_RESIGNED_OU and not all_already_resigned:
             if confirm(f"是否将这 {unmatched_ad_count} 个用户禁用并移动到离职员工 OU？", default=False):
                 actual_resign_count = process_unmatched_users(unmatched_users)
             else:

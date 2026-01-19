@@ -63,11 +63,17 @@ try {
         
         try {
             # 获取现有用户
-            $adUser = Get-ADUser -Identity $samAccountName -Properties DisplayName, EmailAddress, EmployeeID, EmployeeNumber, info -ErrorAction Stop
+            $adUser = Get-ADUser -Identity $samAccountName -Properties DisplayName, EmailAddress, EmployeeID, EmployeeNumber, info, Enabled -ErrorAction Stop
             
             # 准备更新参数
             $updateParams = @{Identity = $adUser.DistinguishedName}
             $changes = @()
+            
+            # 检查是否需要启用用户
+            if (-not $adUser.Enabled) {
+                $updateParams.Add("Enabled", $true)
+                $changes += "Enabled: False -> True"
+            }
             
             # 检查 DisplayName
             if ($displayName -and $displayName.Trim() -ne "" -and $adUser.DisplayName -ne $displayName) {
