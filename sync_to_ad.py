@@ -988,16 +988,17 @@ def process_unmatched_users(unmatched_users):
         print(f"\n所有 {len(unmatched_users)} 个未匹配用户已处理过，跳过")
         return 0
     
-    print(f"\n正在处理 {len(users_to_process)} 个未匹配用户（{len(unmatched_users) - len(users_to_process)} 个已处理）...")
+    print(f"\n正在处理 {len(users_to_process)} 个未匹配用户...")
     
     # 生成用户列表 CSV
     with open(get_output_path('ad_resign_users.csv'), 'w', newline='', encoding='utf-8-sig') as f:
-        writer = csv.DictWriter(f, fieldnames=['SamAccountName', 'DisplayName'])
+        writer = csv.DictWriter(f, fieldnames=['SamAccountName', 'DisplayName', 'EmployeeID'])
         writer.writeheader()
         for user in users_to_process:
             writer.writerow({
                 'SamAccountName': user['SamAccountName'],
-                'DisplayName': user['DisplayName']
+                'DisplayName': user['DisplayName'],
+                'EmployeeID': user.get('EmployeeID', '')
             })
     
     # 调用 PowerShell 脚本处理
@@ -1262,18 +1263,22 @@ if __name__ == "__main__":
                     'EmployeeID': u['EmployeeID'],
                     'Enabled': u['Enabled']
                 })
-        print(f"  - 未匹配用户列表已保存到: output/ad_unmatched_users.csv（{disabled_unmatched} 个禁用）")
+        
+        # 统计需要处理的用户数量
+        users_need_process = sum(
+            1 for u in unmatched_users
+            if u.get('Enabled', True) or DC_RESIGNED_OU not in u.get('DistinguishedName', '')
+        )
+        
+        if disabled_unmatched > 0:
+            print(f"  - {unmatched_ad_count} 个未匹配用户列表已保存到: output/ad_unmatched_users.csv（其中 {disabled_unmatched} 个已经是禁用状态）")
+        else:
+            print(f"  - {unmatched_ad_count} 个未匹配用户列表已保存到: output/ad_unmatched_users.csv")
         
         # 询问是否处理未匹配用户
         if not DRY_RUN and DC_RESIGNED_OU:
-            # 统计需要处理的用户数量
-            users_need_process = sum(
-                1 for u in unmatched_users
-                if u.get('Enabled', True) or DC_RESIGNED_OU not in u.get('DistinguishedName', '')
-            )
-            
             if users_need_process > 0:
-                if confirm(f"是否将 {users_need_process} 个用户禁用并移动到离职员工 OU？（{unmatched_ad_count - users_need_process} 个已处理）", default=False):
+                if confirm(f"是否将 {users_need_process} 个用户禁用并移动到离职员工 OU？", default=False):
                     actual_resign_count = process_unmatched_users(unmatched_users)
                 else:
                     actual_resign_count = 0
@@ -1425,7 +1430,7 @@ if __name__ == "__main__":
             # 禁用用户
             if actual_resign_count > 0:
                 try:
-                    with open(get_output_path('ad_unmatched_users.csv'), 'r', encoding='utf-8-sig') as f:
+                    with open(get_output_path('ad_resign_users.csv'), 'r', encoding='utf-8-sig') as f:
                         reader = csv.DictReader(f)
                         resign_names = []
                         for i, row in enumerate(reader):
