@@ -978,13 +978,23 @@ def send_password_emails(password_file):
 
 def process_unmatched_users(unmatched_users):
     """处理未匹配的用户：禁用并移动到离职员工 OU"""
-    print(f"\n正在处理 {len(unmatched_users)} 个未匹配用户...")
+    # 过滤出需要处理的用户（未禁用或不在离职 OU 中）
+    users_to_process = [
+        u for u in unmatched_users
+        if u.get('Enabled', True) or DC_RESIGNED_OU not in u.get('DistinguishedName', '')
+    ]
+    
+    if not users_to_process:
+        print(f"\n所有 {len(unmatched_users)} 个未匹配用户已处理过，跳过")
+        return 0
+    
+    print(f"\n正在处理 {len(users_to_process)} 个未匹配用户（{len(unmatched_users) - len(users_to_process)} 个已处理）...")
     
     # 生成用户列表 CSV
     with open(get_output_path('ad_resign_users.csv'), 'w', newline='', encoding='utf-8-sig') as f:
         writer = csv.DictWriter(f, fieldnames=['SamAccountName', 'DisplayName'])
         writer.writeheader()
-        for user in unmatched_users:
+        for user in users_to_process:
             writer.writerow({
                 'SamAccountName': user['SamAccountName'],
                 'DisplayName': user['DisplayName']
@@ -1254,11 +1264,21 @@ if __name__ == "__main__":
                 })
         print(f"  - 未匹配用户列表已保存到: output/ad_unmatched_users.csv（{disabled_unmatched} 个禁用）")
         
-        # 询问是否处理未匹配用户（如果不是全部已经处理过）
-        if not DRY_RUN and DC_RESIGNED_OU and not all_already_resigned:
-            if confirm(f"是否将这 {unmatched_ad_count} 个用户禁用并移动到离职员工 OU？", default=False):
-                actual_resign_count = process_unmatched_users(unmatched_users)
+        # 询问是否处理未匹配用户
+        if not DRY_RUN and DC_RESIGNED_OU:
+            # 统计需要处理的用户数量
+            users_need_process = sum(
+                1 for u in unmatched_users
+                if u.get('Enabled', True) or DC_RESIGNED_OU not in u.get('DistinguishedName', '')
+            )
+            
+            if users_need_process > 0:
+                if confirm(f"是否将 {users_need_process} 个用户禁用并移动到离职员工 OU？（{unmatched_ad_count - users_need_process} 个已处理）", default=False):
+                    actual_resign_count = process_unmatched_users(unmatched_users)
+                else:
+                    actual_resign_count = 0
             else:
+                print(f"  ✓ 所有 {unmatched_ad_count} 个未匹配用户已处理过")
                 actual_resign_count = 0
         else:
             actual_resign_count = 0
