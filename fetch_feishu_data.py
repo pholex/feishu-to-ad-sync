@@ -136,7 +136,7 @@ def get_users_by_department(token, department_id, retry_counter=None):
             
             if data["code"] == 0:
                 break
-            elif data["code"] == 99991400:  # 频率限制
+            elif data["code"] in [99991400, 2200]:  # 频率限制或服务不可用
                 if retry_counter is not None:
                     retry_counter['count'] += 1
                 if retry < 2:
@@ -144,7 +144,7 @@ def get_users_by_department(token, department_id, retry_counter=None):
                     continue
                 else:
                     # 重试3次仍失败
-                    raise Exception(f"部门{department_id}用户获取失败: 触发限流且重试3次均失败")
+                    raise Exception(f"部门{department_id}用户获取失败: code={data['code']}, 重试3次均失败")
             else:
                 # 其他错误
                 raise Exception(f"部门{department_id}用户获取失败: code={data['code']}, msg={data.get('msg', 'unknown')}")
