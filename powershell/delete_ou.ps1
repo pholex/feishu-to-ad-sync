@@ -74,8 +74,65 @@ try {
                 Write-Host "✓ 已删除: $ouName" -ForegroundColor Green
                 $successCount++
             } else {
-                Write-Host "⚠ 跳过: $ouName (OU 不为空，包含 $($users.Count) 个用户和 $($childOUs.Count) 个子 OU)" -ForegroundColor Yellow
-                $skippedCount++
+                # OU不为空，尝试移动用户和子OU到父OU后再删除
+                $parentOUDN = ($ouDN -split ',', 2)[1]
+                $totalMoved = 0
+                $totalFailed = 0
+                
+                # 移动用户
+                if ($users.Count -gt 0) {
+                    Write-Host "  尝试移动 $($users.Count) 个用户到父OU: $parentOUDN" -ForegroundColor Gray
+                    
+                    foreach ($user in $users) {
+                        try {
+                            Move-ADObject -Identity $user.DistinguishedName -TargetPath $parentOUDN -ErrorAction Stop
+                            $totalMoved++
+                        } catch {
+                            Write-Host "  ✗ 移动用户失败: $($user.SamAccountName) - $_" -ForegroundColor Red
+                            $totalFailed++
+                        }
+                    }
+                    
+                    if ($totalMoved -gt 0) {
+                        Write-Host "  ✓ 已移动 $totalMoved 个用户" -ForegroundColor Green
+                    }
+                }
+                
+                # 移动子OU
+                if ($childOUs.Count -gt 0) {
+                    Write-Host "  尝试移动 $($childOUs.Count) 个子OU到父OU: $parentOUDN" -ForegroundColor Gray
+                    
+                    $movedOUs = 0
+                    foreach ($childOU in $childOUs) {
+                        try {
+                            # 先取消保护
+                            Set-ADOrganizationalUnit -Identity $childOU.DistinguishedName -ProtectedFromAccidentalDeletion $false -ErrorAction SilentlyContinue
+                            Move-ADObject -Identity $childOU.DistinguishedName -TargetPath $parentOUDN -ErrorAction Stop
+                            $movedOUs++
+                        } catch {
+                            Write-Host "  ✗ 移动子OU失败: $($childOU.Name) - $_" -ForegroundColor Red
+                            $totalFailed++
+                        }
+                    }
+                    
+                    if ($movedOUs -gt 0) {
+                        Write-Host "  ✓ 已移动 $movedOUs 个子OU" -ForegroundColor Green
+                    }
+                }
+                
+                # 再次检查是否为空
+                $remainingUsers = Get-ADUser -Filter * -SearchBase $ouDN -SearchScope OneLevel
+                $remainingChildOUs = Get-ADOrganizationalUnit -Filter * -SearchBase $ouDN -SearchScope OneLevel
+                
+                if ($remainingUsers.Count -eq 0 -and $remainingChildOUs.Count -eq 0) {
+                    Set-ADOrganizationalUnit -Identity $ouDN -ProtectedFromAccidentalDeletion $false
+                    Remove-ADOrganizationalUnit -Identity $ouDN -Confirm:$false
+                    Write-Host "✓ 已删除: $ouName (移动所有内容后)" -ForegroundColor Green
+                    $successCount++
+                } else {
+                    Write-Host "⚠ 跳过: $ouName (仍包含 $($remainingUsers.Count) 个用户和 $($remainingChildOUs.Count) 个子OU)" -ForegroundColor Yellow
+                    $skippedCount++
+                }
             }
         }
         catch {

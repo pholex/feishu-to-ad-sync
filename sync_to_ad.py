@@ -1044,20 +1044,6 @@ def sync_departments():
         if ou_name not in feishu_depts:
             extra_ous.append(ou_name)
     
-    if extra_ous:
-        print(f"\n⚠ 发现 {len(extra_ous)} 个 AD 中存在但飞书中不存在的 OU")
-        # 导出多余的 OU 列表
-        with open(get_output_path('ad_extra_ous.csv'), 'w', newline='', encoding='utf-8-sig') as f:
-            writer = csv.writer(f)
-            writer.writerow(['OU名称'])
-            for ou in extra_ous:
-                writer.writerow([ou])
-        print(f"  - 多余 OU 列表已保存到: output/ad_extra_ous.csv")
-        
-        # 询问是否删除
-        if not DRY_RUN and confirm(f"是否删除这 {len(extra_ous)} 个多余的 OU？", default=False):
-            delete_extra_ous(extra_ous)
-    
     # 上传部门CSV
     scp_cmd = f"sshpass -p '{DC_PASSWORD}' scp -o ControlPath={SSH_CONTROL_PATH} {dept_csv} {DC_USER}@{DC_HOST}:~/feishu_departments.csv"
     run_scp_with_retry(scp_cmd)
@@ -1092,6 +1078,9 @@ def sync_departments():
             print("有错误输出（解码失败）")
     
     print("✓ 部门CSV已上传到域控制器，可供后续脚本使用")
+    
+    # 返回多余的 OU 列表，稍后处理
+    return extra_ous
 
 def cleanup_remote_files():
     """清理远程服务器上的临时文件"""
@@ -1191,7 +1180,7 @@ if __name__ == "__main__":
     
     # 1. 同步部门OU结构
     print("\n【步骤 1/6】同步飞书部门结构到 AD 域")
-    sync_departments()
+    extra_ous = sync_departments()
     
     # 2. 获取现有AD用户
     print("\n【步骤 2/6】获取 AD 域现有用户")
@@ -1245,35 +1234,34 @@ if __name__ == "__main__":
         # 统计禁用用户数量
         disabled_unmatched = sum(1 for u in unmatched_users if not u.get('Enabled', True))
         
-        # 检查是否所有未匹配用户都已经是禁用且在离职员工 OU 中
-        all_already_resigned = all(
-            not u.get('Enabled', True) and DC_RESIGNED_OU in u.get('DistinguishedName', '')
-            for u in unmatched_users
-        ) if DC_RESIGNED_OU else False
-        
-        with open(get_output_path('ad_unmatched_users.csv'), 'w', newline='', encoding='utf-8-sig') as f:
-            writer = csv.DictWriter(f, fieldnames=['SamAccountName', 'DisplayName', 'EmailAddress', 'EmployeeID', 'Enabled'])
-            writer.writeheader()
-            # 不导出 DistinguishedName 到 CSV（太长）
-            for u in unmatched_users:
-                writer.writerow({
-                    'SamAccountName': u['SamAccountName'],
-                    'DisplayName': u['DisplayName'],
-                    'EmailAddress': u['EmailAddress'],
-                    'EmployeeID': u['EmployeeID'],
-                    'Enabled': u['Enabled']
-                })
-        
-        # 统计需要处理的用户数量
+        # 统计需要处理的用户数量（启用的或不在离职 OU 中的）
         users_need_process = sum(
             1 for u in unmatched_users
             if u.get('Enabled', True) or DC_RESIGNED_OU not in u.get('DistinguishedName', '')
         )
         
-        if disabled_unmatched > 0:
-            print(f"  - {unmatched_ad_count} 个未匹配用户列表已保存到: output/ad_unmatched_users.csv（其中 {disabled_unmatched} 个已经是禁用状态）")
+        # 只有当有需要处理的用户时，才保存 CSV
+        if users_need_process > 0:
+            with open(get_output_path('ad_unmatched_users.csv'), 'w', newline='', encoding='utf-8-sig') as f:
+                writer = csv.DictWriter(f, fieldnames=['SamAccountName', 'DisplayName', 'EmailAddress', 'EmployeeID', 'Enabled'])
+                writer.writeheader()
+                # 不导出 DistinguishedName 到 CSV（太长）
+                for u in unmatched_users:
+                    writer.writerow({
+                        'SamAccountName': u['SamAccountName'],
+                        'DisplayName': u['DisplayName'],
+                        'EmailAddress': u['EmailAddress'],
+                        'EmployeeID': u['EmployeeID'],
+                        'Enabled': u['Enabled']
+                    })
+            
+            if disabled_unmatched > 0:
+                print(f"  - {unmatched_ad_count} 个未匹配用户列表已保存到: output/ad_unmatched_users.csv（其中 {disabled_unmatched} 个已经是禁用状态）")
+            else:
+                print(f"  - {unmatched_ad_count} 个未匹配用户列表已保存到: output/ad_unmatched_users.csv")
         else:
-            print(f"  - {unmatched_ad_count} 个未匹配用户列表已保存到: output/ad_unmatched_users.csv")
+            # 所有未匹配用户都已禁用且在离职 OU 中
+            print(f"  ✓ 所有 {unmatched_ad_count} 个未匹配用户已处理过（均已禁用）")
         
         # 询问是否处理未匹配用户
         if not DRY_RUN and DC_RESIGNED_OU:
@@ -1283,7 +1271,6 @@ if __name__ == "__main__":
                 else:
                     actual_resign_count = 0
             else:
-                print(f"  ✓ 所有 {unmatched_ad_count} 个未匹配用户已处理过")
                 actual_resign_count = 0
         else:
             actual_resign_count = 0
@@ -1312,6 +1299,11 @@ if __name__ == "__main__":
         # 下载实际更新成功的用户文件（非DRY_RUN模式且有更新时）
         if actual_update_count > 0 and not DRY_RUN:
             download_file_from_dc('ad_updated_accounts.csv', get_output_path('ad_updated_accounts.csv'))
+    
+    # 处理多余的OU（在用户移动完成后）
+    if extra_ous and not DRY_RUN:
+        if confirm(f"\n是否删除 {len(extra_ous)} 个多余的 OU（会先移动其中的剩余用户）？", default=False):
+            delete_extra_ous(extra_ous)
     
     print("\n" + "=" * 50)
     if DRY_RUN:
