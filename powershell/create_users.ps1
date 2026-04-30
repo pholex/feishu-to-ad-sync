@@ -104,16 +104,18 @@ try {
                     SamAccountName = $samAccountName
                     UserPrincipalName = $upn
                     DisplayName = $displayName
-                    EmailAddress = $email
-                    EmployeeID = $employeeID
-                    EmployeeNumber = $employeeNumber
-                    OtherAttributes = @{info = $info}
                     AccountPassword = $securePassword
                     Enabled = $true
                     Path = $ouPath
                     PasswordNeverExpires = $false
                     ChangePasswordAtLogon = $false
                 }
+                
+                # 仅在非空时添加可选字段，避免空字符串导致 AD 拒绝请求
+                if ($email -and $email.Trim() -ne "") { $newUserParams.EmailAddress = $email }
+                if ($employeeID -and $employeeID.Trim() -ne "") { $newUserParams.EmployeeID = $employeeID }
+                if ($employeeNumber -and $employeeNumber.Trim() -ne "") { $newUserParams.EmployeeNumber = $employeeNumber }
+                if ($info -and $info.Trim() -ne "") { $newUserParams.OtherAttributes = @{info = $info} }
                 
                 New-ADUser @newUserParams
                 
