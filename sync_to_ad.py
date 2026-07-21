@@ -210,6 +210,44 @@ if exceptions_str:
             feishu_pinyin, ad_pinyin = pair.strip().split('=')
             PINYIN_EXCEPTIONS[feishu_pinyin.strip()] = ad_pinyin.strip()
 
+# AD sAMAccountName 最大长度（硬限制，超过会被域控拒绝创建）
+MAX_SAM_ACCOUNT_LENGTH = 20
+
+def truncate_sam_account(sam_account):
+    """将 SamAccountName 截断到 AD 允许的最大长度（20 字符）。
+
+    优先保留 '名.姓' 中的 '.姓' 后缀，只截断名的部分，尽量维持可读性；
+    姓氏本身超长等极端情况则整体截断。名后带重名序号时保留序号，避免与他人冲突。
+    """
+    if len(sam_account) <= MAX_SAM_ACCOUNT_LENGTH:
+        return sam_account
+
+    if '.' in sam_account:
+        head, sep, surname = sam_account.rpartition('.')
+        suffix = sep + surname  # 例如 ".xing"
+        head_budget = MAX_SAM_ACCOUNT_LENGTH - len(suffix)
+
+        if head_budget >= 1:
+            # 保留 head 末尾可能存在的重名序号（如 jiayi1 -> 序号 1）
+            trailing_digits = ''
+            i = len(head)
+            while i > 0 and head[i - 1].isdigit():
+                i -= 1
+            trailing_digits = head[i:]
+
+            if trailing_digits and len(trailing_digits) < head_budget:
+                keep = head_budget - len(trailing_digits)
+                new_head = head[:keep] + trailing_digits
+            else:
+                new_head = head[:head_budget]
+
+            return new_head + suffix
+        else:
+            # 姓氏后缀本身就 >= 20，无法保留，直接整体截断
+            return sam_account[:MAX_SAM_ACCOUNT_LENGTH]
+
+    return sam_account[:MAX_SAM_ACCOUNT_LENGTH]
+
 # Dry-run 模式标志
 DRY_RUN = False
 
@@ -720,6 +758,12 @@ def split_users_for_sync(feishu_csv, existing_users, users_without_union_id):
                     sam_account = f"{pinyin}{index}"
         else:
             sam_account = pinyin  # 拼音不重名，用拼音
+        
+        # 截断超长 SamAccountName（AD sAMAccountName 上限 20 字符，超长会创建失败）
+        original_sam = sam_account
+        sam_account = truncate_sam_account(sam_account)
+        if sam_account != original_sam:
+            print(f"  ⚠ SamAccountName 超长已截断: {original_sam}（{len(original_sam)}字符）-> {sam_account}（{len(sam_account)}字符）[用户: {display_name} 工号: {employee_no}]")
         
         # 匹配逻辑：优先通过 Union ID，其次通过 SamAccountName
         matched_sam = None
