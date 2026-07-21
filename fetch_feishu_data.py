@@ -278,7 +278,7 @@ def export_to_csv(users, dept_map):
     
     with open(output_file, "w", newline="", encoding="utf-8-sig") as f:
         writer = csv.writer(f)
-        writer.writerow(["user_id", "open_id", "union_id", "uuid", "name", "pinyin", "enterprise_email", "mobile", "employee_no", "job_title", "status", "dept_id", "dept_name", "department_ids", "department_names"])
+        writer.writerow(["user_id", "open_id", "union_id", "uuid", "name", "pinyin", "enterprise_email", "mobile", "employee_no", "employee_type", "job_title", "status", "dept_id", "dept_name", "department_ids", "department_names"])
         
         for user in users:
             # 排除冻结和离职用户
@@ -289,6 +289,16 @@ def export_to_csv(users, dept_map):
                 if is_frozen or is_resigned:
                     continue
             
+            # 排除外包(3)、劳务(4)、顾问(5)
+            if user.get("employee_type") in [3, 4, 5]:
+                continue
+            
+            # 排除测试/功能性账号（名字含"账号"或"测试"字样）
+            user_name = user.get("name", "")
+            if "账号" in user_name or "测试" in user_name:
+                print(f"⏭ 跳过测试/功能账号: {user_name} (工号: {user.get('employee_no', '')})")
+                continue
+            
             user_id = user.get("user_id", "")
             open_id = user.get("open_id", "")
             union_id = user.get("union_id", "")
@@ -298,6 +308,7 @@ def export_to_csv(users, dept_map):
             user_uuid = generate_uuid_from_email(enterprise_email)
             mobile = user.get("mobile", "")
             employee_no = user.get("employee_no", "")
+            employee_type = user.get("employee_type", "")
             job_title = user.get("job_title", "")
             
             # 获取用户状态信息
@@ -319,7 +330,7 @@ def export_to_csv(users, dept_map):
             for did in department_ids:
                 dept_user_count[did] = dept_user_count.get(did, 0) + 1
             
-            writer.writerow([user_id, open_id, union_id, user_uuid, name, pinyin, enterprise_email, mobile, employee_no, job_title, status, dept_id, dept_name, all_dept_ids, all_dept_names])
+            writer.writerow([user_id, open_id, union_id, user_uuid, name, pinyin, enterprise_email, mobile, employee_no, employee_type, job_title, status, dept_id, dept_name, all_dept_ids, all_dept_names])
     
     print(f"已导出 {len(users)} 个用户到 {output_file}")
     
