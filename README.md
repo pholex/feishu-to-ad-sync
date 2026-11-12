@@ -91,11 +91,34 @@ python3 sync_to_ad.py
 ## 同步流程
 
 1. 获取飞书数据（用户和部门）
-2. 同步部门结构到 AD 域 OU
+2. 同步部门结构到 AD 域 OU（以 OU 的 Description 存飞书部门ID）
+   - 部门改名/调整上级时移动 OU，临时解除"防止意外删除"保护，移动后恢复
+   - 目标位置已有同名 OU 时，并入原 OU 后再移动；部门ID冲突按本次飞书数据判定保留哪个。
+     遇到 GPO 链接、计算机/组等非用户对象、无法判定的ID冲突时不自动处理，列出原因
 3. 对比飞书和 AD 用户，生成同步计划
 4. 创建新用户并生成随机密码
-5. 更新现有用户信息
+5. 更新现有用户信息（含移动到对应部门 OU）
 6. 发送密码通知邮件
+7. 清理飞书中已不存在的部门 OU（按部门ID判定，见 `powershell/delete_ou.ps1` 头部注释）
+   - 只删除空的残留 OU；含用户等对象或链接了 GPO 的不删，列出原因
+   - 位置与飞书部门一致但部门ID不对的 OU，修正为飞书部门ID
+   - 残留数超过现有部门 OU 的 20% 时整体跳过（疑似飞书数据不完整）
+
+## 回归测试
+
+PowerShell 脚本的核心逻辑有回归测试，用内存模拟的 AD（`tests/MockAD.ps1`）运行，不需要域控，macOS/Linux/Windows 上装有 PowerShell 7（`pwsh`）即可：
+
+```bash
+pwsh -NoProfile -File tests/run.ps1                  # 运行全部测试
+TEST_VERBOSE=1 pwsh -NoProfile -File tests/run.ps1   # 同时打印被测脚本的日志
+```
+
+| 测试文件 | 覆盖内容 |
+|---------|---------|
+| `tests/create_ou.Tests.ps1` | 部门 OU 移动时与同名 OU 的合并、停止条件、部门ID冲突按飞书判定 |
+| `tests/delete_ou.Tests.ps1` | 残留 OU 判定与删除、部门ID修正、熔断 |
+
+修改 `powershell/create_ou.ps1` 或 `powershell/delete_ou.ps1` 后请先跑一遍；模拟 AD 只覆盖脚本用到的 cmdlet 行为，上线前仍建议在域控上用 `--dry-run` 预览。
 
 ## 字段映射
 
