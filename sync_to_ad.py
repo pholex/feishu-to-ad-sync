@@ -844,8 +844,13 @@ $DC_RESIGNED_OU = "{DC_RESIGNED_OU}"
     
     print("✓ 已上传配置到域控制器")
 
-def execute_on_dc(operation, csv_file, ps_script, use_local=False):
-    """在域控制器上执行操作，返回实际处理的用户数"""
+def execute_on_dc(operation, csv_file, ps_script, use_local=False, dry_run=None):
+    """在域控制器上执行操作，返回实际处理的用户数
+
+    dry_run: None 时跟随全局 DRY_RUN；True/False 覆盖本次调用
+    """
+    if dry_run is None:
+        dry_run = DRY_RUN
     if not os.path.exists(csv_file):
         return 0
     
@@ -892,7 +897,7 @@ def execute_on_dc(operation, csv_file, ps_script, use_local=False):
         
         # 执行脚本，dry-run 模式传递 -DryRun 参数
         print(f"正在执行...")
-        dry_run_flag = "-DryRun" if DRY_RUN else ""
+        dry_run_flag = "-DryRun" if dry_run else ""
         # PowerShell 脚本路径
         script_path = f"{DC_USER_HOME}/{operation}.ps1"
         # 使用 PowerShell 命令包装，重定向信息流
@@ -909,7 +914,7 @@ def execute_on_dc(operation, csv_file, ps_script, use_local=False):
                 print("（脚本无输出）")
             
             # 提取实际处理的用户数
-            if DRY_RUN:
+            if dry_run:
                 match = re.search(r'将(?:更新|创建): (\d+) 个用户', output)
             else:
                 match = re.search(r'成功: (\d+) 个用户', output)
@@ -1048,19 +1053,24 @@ def process_unmatched_users(unmatched_users):
     # 调用 PowerShell 脚本处理
     return execute_on_dc('ResignUsers', get_output_path('ad_resign_users.csv'), get_ps_path('resign_users.ps1'), use_local=True)
 
-def delete_extra_ous(extra_ous):
-    """删除多余的 OU"""
-    print(f"\n正在删除 {len(extra_ous)} 个多余的 OU...")
-    
-    # 生成 OU 列表 CSV
-    with open(get_output_path('ad_delete_ous.csv'), 'w', newline='', encoding='utf-8-sig') as f:
-        writer = csv.writer(f)
-        writer.writerow(['OU名称'])
-        for ou in extra_ous:
-            writer.writerow([ou])
-    
-    # 调用 PowerShell 脚本删除
-    execute_on_dc('DeleteOUs', get_output_path('ad_delete_ous.csv'), get_ps_path('delete_ou.ps1'), use_local=True)
+def cleanup_stale_ous():
+    """清理飞书中已不存在的部门 OU（按部门ID判定，在域控上由 delete_ou.ps1 完成）
+
+    须在部门同步和用户更新之后调用。判定与安全规则见 powershell/delete_ou.ps1 头部注释。
+    """
+    dept_csv = get_output_path('feishu_departments.csv')
+    ps_script = get_ps_path('delete_ou.ps1')
+    if DRY_RUN:
+        execute_on_dc('DeleteOUs', dept_csv, ps_script, use_local=True)
+        return
+    if AUTO_YES:
+        print("是否清理飞书中已不存在的部门 OU？ [自动确认]")
+        execute_on_dc('DeleteOUs', dept_csv, ps_script, use_local=True, dry_run=False)
+        return
+    # 交互模式：先预览，确认后再执行
+    execute_on_dc('DeleteOUs', dept_csv, ps_script, use_local=True, dry_run=True)
+    if confirm("\n是否按上述预览清理飞书中已不存在的部门 OU？", default=False):
+        execute_on_dc('DeleteOUs', dept_csv, ps_script, use_local=True, dry_run=False)
 
 def sync_departments():
     """同步部门OU结构到AD域"""
@@ -1071,22 +1081,8 @@ def sync_departments():
     
     print("正在同步部门结构...")
     
-    # 读取飞书部门列表
-    feishu_depts = set()
-    with open(dept_csv, 'r', encoding='utf-8-sig') as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            feishu_depts.add(row['dept_name'])
-    
-    # 获取 AD 现有部门（返回 {DN: 名称}）
-    ad_depts_dict = get_existing_ad_departments()
-    ad_dept_names = set(ad_depts_dict.values())  # 提取所有 OU 名称
-    
-    # 找出 AD 中多余的 OU（AD 有但飞书没有）
-    extra_ous = []
-    for ou_name in ad_dept_names:
-        if ou_name not in feishu_depts:
-            extra_ous.append(ou_name)
+    # 获取 AD 现有部门（含数据完整性校验，失败会退出）
+    get_existing_ad_departments()
     
     # 上传部门CSV
     scp_cmd = f"sshpass -p '{DC_PASSWORD}' scp -o ControlPath={SSH_CONTROL_PATH} {dept_csv} {DC_USER}@{DC_HOST}:~/feishu_departments.csv"
@@ -1122,9 +1118,6 @@ def sync_departments():
             print("有错误输出（解码失败）")
     
     print("✓ 部门CSV已上传到域控制器，可供后续脚本使用")
-    
-    # 返回多余的 OU 列表，稍后处理
-    return extra_ous
 
 def cleanup_remote_files():
     """清理远程服务器上的临时文件"""
@@ -1134,6 +1127,7 @@ def cleanup_remote_files():
         'CreateOU.ps1',
         'CreateAccounts.ps1',
         'UpdateAccounts.ps1',
+        'DeleteOUs.ps1',
         'dc_config.ps1',
         'ExistingOUs.csv',
         'ExportedUsers.csv',
@@ -1224,7 +1218,7 @@ if __name__ == "__main__":
     
     # 1. 同步部门OU结构
     print("\n【步骤 1/6】同步飞书部门结构到 AD 域")
-    extra_ous = sync_departments()
+    sync_departments()
     
     # 2. 获取现有AD用户
     print("\n【步骤 2/6】获取 AD 域现有用户")
@@ -1322,8 +1316,8 @@ if __name__ == "__main__":
         actual_resign_count = 0
     
     if new_count == 0 and update_count == 0:
+        # 不提前退出：残留 OU 清理与用户变更无关，仍需执行
         print("\n没有需要同步的用户")
-        sys.exit(0)
     
     # 4. 执行新建
     actual_new_count = 0
@@ -1344,10 +1338,9 @@ if __name__ == "__main__":
         if actual_update_count > 0 and not DRY_RUN:
             download_file_from_dc('ad_updated_accounts.csv', get_output_path('ad_updated_accounts.csv'))
     
-    # 处理多余的OU（在用户移动完成后）
-    if extra_ous and not DRY_RUN:
-        if confirm(f"\n是否删除 {len(extra_ous)} 个多余的 OU（会先移动其中的剩余用户）？", default=False):
-            delete_extra_ous(extra_ous)
+    # 清理飞书中已不存在的部门 OU（须在部门同步和用户移动完成后）
+    print("\n【清理】飞书中已不存在的部门 OU")
+    cleanup_stale_ous()
     
     print("\n" + "=" * 50)
     if DRY_RUN:

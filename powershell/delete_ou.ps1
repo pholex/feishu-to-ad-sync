@@ -1,6 +1,21 @@
-﻿# 删除多余的 OU
+﻿# 清理飞书中已不存在的部门 OU
+#
+# 判定依据是部门ID（OU 的 Description），不是名称——名称会重名，ID 不会。
+# 须在部门同步（create_ou.ps1）和用户更新之后运行：此时有效部门都已就位，飞书员工都已移到正确 OU。
+#
+#   有效 OU：Description 是本次飞书部门ID 的 OU；或 DN 与某个飞书部门的期望位置（名称+层级）
+#            完全一致的 OU——即使 Description 不一致也保留（如飞书删除重建了同名部门、
+#            本次部门同步因上级失败未能修正其ID）——并顺带把其 Description 修正为飞书部门ID；
+#            以及以上 OU 的所有上级 OU（上级没有ID也保留，否则会把下面的有效部门一起拆掉）
+#   残留 OU：基础 OU 下（不含 DC_EXCLUDE_OU 子树）其余所有 OU
+#
+# 残留 OU 自底向上删除，只删"干净"的：没有链接 GPO、里面没有用户/计算机/组等任何非 OU 对象、
+# 子 OU 都已删除。不满足的不删也不移动，列出原因交人工处理。
+# 熔断：残留数超过现有部门 OU 的 MaxDeleteRatio（默认 20%）时整体跳过——多半是飞书数据不完整。
 param(
-    [string]$CsvPath = "$env:USERPROFILE\ad_delete_ous.csv"
+    [switch]$DryRun,
+    [double]$MaxDeleteRatio = 0.2,
+    [string]$CsvPath = "$env:USERPROFILE\feishu_departments.csv"
 )
 
 Import-Module ActiveDirectory
@@ -18,134 +33,179 @@ if (Test-Path $configPath) {
     exit 1
 }
 
-# 使用配置文件中的变量
 $BaseOU = $DC_BASE_OU
+$ExcludeOU = $DC_EXCLUDE_OU
 
-$successCount = 0
-$failedCount = 0
-$skippedCount = 0
+$dnSplitter = [regex]::new('(?<!\\),')
+function Get-ParentDN { param($DN) return $dnSplitter.Split($DN, 2)[1] }
+function Get-Depth { param($DN) return $dnSplitter.Split($DN).Count }
+function Test-UnderDN {
+    # DN 是否等于 Root 或位于 Root 子树中
+    param($DN, $Root)
+    if (-not $Root) { return $false }
+    return ($DN -eq $Root) -or $DN.ToLower().EndsWith(",$($Root.ToLower())")
+}
+
+$title = if ($DryRun) { "===== 清理飞书中已不存在的部门 OU [DRY-RUN] =====" } else { "===== 清理飞书中已不存在的部门 OU =====" }
+Write-Host "`n$title" -ForegroundColor Cyan
+Write-Host "基础 OU: $BaseOU"
+if ($ExcludeOU) { Write-Host "排除 OU: $ExcludeOU" }
 
 try {
-    $ous = Import-Csv -Path $CsvPath -Encoding UTF8
-    
-    # 获取所有 OU 的完整信息并按层级深度排序（从深到浅）
-    $ouList = @()
-    foreach ($ou in $ous) {
-        $ouName = $ou.'OU名称'
-        $adOU = Get-ADOrganizationalUnit -Filter {Name -eq $ouName} -SearchBase $BaseOU -Properties DistinguishedName -ErrorAction SilentlyContinue | Select-Object -First 1
-        if ($adOU) {
-            $depth = ($adOU.DistinguishedName -split ',').Count
-            $ouList += [PSCustomObject]@{
-                Name = $ouName
-                DN = $adOU.DistinguishedName
-                Depth = $depth
+    # ---- 飞书部门ID ----
+    $feishuIds = @{}     # dept_id -> 部门行
+    foreach ($row in @(Import-Csv -Path $CsvPath -Encoding UTF8 -ErrorAction Stop)) {
+        if ($row.dept_id) { $feishuIds[[string]$row.dept_id] = $row }
+    }
+    if ($feishuIds.Count -eq 0) {
+        Write-Host "✗ 飞书部门列表为空，跳过清理（防止误删全部 OU）" -ForegroundColor Red
+        exit 1
+    }
+
+    # 每个飞书部门的期望 DN -> 部门ID（与 create_ou.ps1 的 Get-OUPath 规则一致：上级不在列表中时挂在基础 OU 下）
+    $expectedDNs = @{}
+    foreach ($id in @($feishuIds.Keys)) {
+        $parts = @(); $cur = $id; $guard = 0
+        while ($cur -and $cur -ne '0' -and $feishuIds.ContainsKey($cur) -and $guard -lt 64) {
+            $parts += "OU=$($feishuIds[$cur].dept_name)"
+            $cur = [string]$feishuIds[$cur].parent_dept_id
+            $guard++
+        }
+        $expectedDNs[(($parts + $BaseOU) -join ',').ToLower()] = $id
+    }
+
+    # ---- AD 中的部门 OU（不含基础 OU 本身和排除子树）----
+    $baseOUs = @(Get-ADOrganizationalUnit -Filter * -SearchBase $BaseOU -Properties Description, gPLink -ErrorAction Stop)
+    $allOUs = @($baseOUs | Where-Object { $_.DistinguishedName -ne $BaseOU -and -not (Test-UnderDN $_.DistinguishedName $ExcludeOU) })
+
+    # ---- 有效 OU 及其所有上级 ----
+    $keep = @{}
+    foreach ($ou in $allOUs) {
+        $idLive = $ou.Description -and $feishuIds.ContainsKey([string]$ou.Description)
+        $posLive = $expectedDNs.ContainsKey($ou.DistinguishedName.ToLower())
+        if ($idLive -or $posLive) {
+            $dn = $ou.DistinguishedName
+            while ($dn -and $dn -ne $BaseOU -and -not $keep.ContainsKey($dn.ToLower())) {
+                $keep[$dn.ToLower()] = $true
+                $dn = Get-ParentDN $dn
             }
         }
     }
-    
-    # 按深度降序排序（深层级先删除）
-    $ouList = @($ouList | Sort-Object -Property Depth -Descending)
-    
-    Write-Host "`n===== 删除多余的 OU =====" -ForegroundColor Cyan
-    Write-Host "基础 OU: $BaseOU"
-    Write-Host "待处理: $($ouList.Count) 个OU`n"
-    
-    foreach ($ouItem in $ouList) {
-        $ouName = $ouItem.Name
-        $ouDN = $ouItem.DN
-        
+    # ---- 位置与飞书部门一致、但 Description 不是该部门ID 的 OU：修正为飞书部门ID ----
+    # 同一层级下 OU 不能重名，位置对上即可唯一确定部门。
+    # 例外：该ID已在别的 OU 上（如该部门的正式 OU 搬迁失败仍在别处）——再写一份会让按ID查找到两个 OU，只报告不修改
+    $idFixed = 0; $idSkipped = 0
+    foreach ($ou in $allOUs) {
+        $dnKey = $ou.DistinguishedName.ToLower()
+        if (-not $expectedDNs.ContainsKey($dnKey)) { continue }
+        $want = $expectedDNs[$dnKey]
+        $old = [string]$ou.Description
+        if ($old -eq $want) { continue }
+        $owner = @($baseOUs | Where-Object { [string]$_.Description -eq $want -and $_.ObjectGUID -ne $ou.ObjectGUID }) | Select-Object -First 1
+        if ($owner) {
+            Write-Host "⚠ 未修正部门ID: $($ou.DistinguishedName) (Description='$old')" -ForegroundColor Yellow
+            Write-Host "    - 飞书部门ID '$want' 已在另一个 OU 上: $($owner.DistinguishedName)，需人工确认保留哪个" -ForegroundColor Yellow
+            $idSkipped++
+            continue
+        }
+        if ($DryRun) {
+            Write-Host "[DRY-RUN] 将修正部门ID: $($ou.DistinguishedName) Description '$old' -> '$want'" -ForegroundColor Cyan
+        } else {
+            Set-ADOrganizationalUnit -Identity $ou.ObjectGUID -Description $want -ErrorAction Stop
+            Write-Host "✓ 已修正部门ID: $($ou.DistinguishedName) Description '$old' -> '$want'" -ForegroundColor Green
+        }
+        $idFixed++
+    }
+    if ($idFixed -or $idSkipped) {
+        $verb = if ($DryRun) { "将修正" } else { "已修正" }
+        Write-Host "部门ID: $verb $idFixed 个，未修正 $idSkipped 个`n"
+    }
+
+    # 残留 OU，深层在前（先删子再删父）
+    $stale = @($allOUs | Where-Object { -not $keep.ContainsKey($_.DistinguishedName.ToLower()) } |
+        Sort-Object { Get-Depth $_.DistinguishedName } -Descending)
+
+    Write-Host "部门 OU: $($allOUs.Count) 个，飞书部门: $($feishuIds.Count) 个，判定为残留: $($stale.Count) 个`n"
+    if ($stale.Count -eq 0) {
+        Write-Host "✓ 没有需要清理的 OU" -ForegroundColor Green
+        exit 0
+    }
+
+    # ---- 熔断 ----
+    $limit = [math]::Floor($allOUs.Count * $MaxDeleteRatio)
+    $tripped = ($stale.Count -gt $limit) -and ($stale.Count -gt 5)
+    if ($tripped) {
+        Write-Host "⚠ 残留 OU 数 ($($stale.Count)) 超过现有部门 OU 的 $([int]($MaxDeleteRatio * 100))% ($limit)，疑似飞书数据不完整" -ForegroundColor Red
+        if (-not $DryRun) {
+            Write-Host "✗ 本次不做任何删除。确认无误后可在域控上手动执行: DeleteOUs.ps1 -MaxDeleteRatio 1" -ForegroundColor Red
+            Write-Host "`n残留 OU 列表:"
+            $stale | ForEach-Object { Write-Host "  - $($_.DistinguishedName)  (Description='$($_.Description)')" }
+            exit 1
+        }
+        Write-Host "  [DRY-RUN] 继续预览；正式运行时将因熔断跳过`n" -ForegroundColor Yellow
+    }
+
+    # ---- 自底向上删除 ----
+    $deleted = @{}       # 已删除（DryRun 下为"将删除"）的 DN
+    $successCount = 0; $skippedCount = 0; $failedCount = 0
+
+    foreach ($ou in $stale) {
+        $dn = $ou.DistinguishedName
+        $desc = if ($ou.Description) { " (Description='$($ou.Description)')" } else { "" }
         try {
-            # 检查是否是基础OU本身
-            if ($ouDN -eq $BaseOU) {
-                Write-Host "⚠ 跳过: $ouName (不能删除基础OU)" -ForegroundColor Yellow
+            $children = @(Get-ADObject -SearchBase $dn -SearchScope OneLevel -Filter * -ErrorAction Stop)
+            $objects = @($children | Where-Object { $_.ObjectClass -ne 'organizationalUnit' })
+            $remainingChildOUs = @($children | Where-Object {
+                $_.ObjectClass -eq 'organizationalUnit' -and -not $deleted.ContainsKey($_.DistinguishedName.ToLower()) })
+
+            $reasons = @()
+            if (([string]$ou.gPLink).Trim() -ne '') { $reasons += "链接了 GPO" }
+            if ($objects.Count -gt 0) {
+                $names = ($objects | Select-Object -First 5 | ForEach-Object { "[$($_.ObjectClass)] $($_.Name)" }) -join ', '
+                if ($objects.Count -gt 5) { $names += " 等 $($objects.Count) 个" }
+                $reasons += "包含对象: $names"
+            }
+
+            if ($reasons.Count -gt 0) {
+                Write-Host "⚠ 跳过: $dn$desc" -ForegroundColor Yellow
+                $reasons | ForEach-Object { Write-Host "    - $_" -ForegroundColor Yellow }
                 $skippedCount++
                 continue
             }
-            
-            # 检查 OU 是否为空（没有用户和子 OU）
-            $users = @(Get-ADUser -Filter * -SearchBase $ouDN -SearchScope OneLevel)
-            $childOUs = @(Get-ADOrganizationalUnit -Filter * -SearchBase $ouDN -SearchScope OneLevel)
-            
-            if ($users.Count -eq 0 -and $childOUs.Count -eq 0) {
-                # OU 为空，可以删除
-                # 先取消防止意外删除保护
-                Set-ADOrganizationalUnit -Identity $ouDN -ProtectedFromAccidentalDeletion $false
-                Remove-ADOrganizationalUnit -Identity $ouDN -Confirm:$false
-                Write-Host "✓ 已删除: $ouName" -ForegroundColor Green
-                $successCount++
-            } else {
-                # OU不为空，尝试移动用户和子OU到父OU后再删除
-                $parentOUDN = ($ouDN -split ',', 2)[1]
-                $totalMoved = 0
-                $totalFailed = 0
-                
-                # 移动用户
-                if ($users.Count -gt 0) {
-                    Write-Host "  尝试移动 $($users.Count) 个用户到父OU: $parentOUDN" -ForegroundColor Gray
-                    
-                    foreach ($user in $users) {
-                        try {
-                            Move-ADObject -Identity $user.DistinguishedName -TargetPath $parentOUDN -ErrorAction Stop
-                            $totalMoved++
-                        } catch {
-                            Write-Host "  ✗ 移动用户失败: $($user.SamAccountName) - $_" -ForegroundColor Red
-                            $totalFailed++
-                        }
-                    }
-                    
-                    if ($totalMoved -gt 0) {
-                        Write-Host "  ✓ 已移动 $totalMoved 个用户" -ForegroundColor Green
-                    }
-                }
-                
-                # 移动子OU
-                if ($childOUs.Count -gt 0) {
-                    Write-Host "  尝试移动 $($childOUs.Count) 个子OU到父OU: $parentOUDN" -ForegroundColor Gray
-                    
-                    $movedOUs = 0
-                    foreach ($childOU in $childOUs) {
-                        try {
-                            # 先取消保护
-                            Set-ADOrganizationalUnit -Identity $childOU.DistinguishedName -ProtectedFromAccidentalDeletion $false -ErrorAction SilentlyContinue
-                            Move-ADObject -Identity $childOU.DistinguishedName -TargetPath $parentOUDN -ErrorAction Stop
-                            $movedOUs++
-                        } catch {
-                            Write-Host "  ✗ 移动子OU失败: $($childOU.Name) - $_" -ForegroundColor Red
-                            $totalFailed++
-                        }
-                    }
-                    
-                    if ($movedOUs -gt 0) {
-                        Write-Host "  ✓ 已移动 $movedOUs 个子OU" -ForegroundColor Green
-                    }
-                }
-                
-                # 再次检查是否为空
-                $remainingUsers = @(Get-ADUser -Filter * -SearchBase $ouDN -SearchScope OneLevel)
-                $remainingChildOUs = @(Get-ADOrganizationalUnit -Filter * -SearchBase $ouDN -SearchScope OneLevel)
-                
-                if ($remainingUsers.Count -eq 0 -and $remainingChildOUs.Count -eq 0) {
-                    Set-ADOrganizationalUnit -Identity $ouDN -ProtectedFromAccidentalDeletion $false
-                    Remove-ADOrganizationalUnit -Identity $ouDN -Confirm:$false
-                    Write-Host "✓ 已删除: $ouName (移动所有内容后)" -ForegroundColor Green
-                    $successCount++
-                } else {
-                    Write-Host "⚠ 跳过: $ouName (仍包含 $($remainingUsers.Count) 个用户和 $($remainingChildOUs.Count) 个子OU)" -ForegroundColor Yellow
-                    $skippedCount++
-                }
+            if ($remainingChildOUs.Count -gt 0) {
+                # 子 OU 的原因已在前面报告过（深层先处理），这里只记一行
+                Write-Host "⚠ 跳过: $dn （子 OU 未能删除）" -ForegroundColor DarkYellow
+                $skippedCount++
+                continue
             }
+
+            if ($DryRun) {
+                Write-Host "[DRY-RUN] 将删除: $dn$desc" -ForegroundColor Cyan
+            } else {
+                Set-ADOrganizationalUnit -Identity $ou.ObjectGUID -ProtectedFromAccidentalDeletion $false -ErrorAction Stop
+                # 不加 -Recursive：已确认为空，万一有残留对象则报错而不是连带删除
+                Remove-ADOrganizationalUnit -Identity $ou.ObjectGUID -Confirm:$false -ErrorAction Stop
+                Write-Host "✓ 已删除: $dn$desc" -ForegroundColor Green
+            }
+            $deleted[$dn.ToLower()] = $true
+            $successCount++
         }
         catch {
-            Write-Host "✗ 删除失败: $ouName - $_" -ForegroundColor Red
+            Write-Host "✗ 删除失败: $dn - $($_.Exception.Message)" -ForegroundColor Red
             $failedCount++
         }
     }
-    
+
     Write-Host "`n===== 处理完成 =====" -ForegroundColor Cyan
-    Write-Host "成功删除: $successCount 个 OU" -ForegroundColor Green
-    Write-Host "跳过: $skippedCount 个 OU" -ForegroundColor Yellow
+    if ($DryRun) {
+        Write-Host "将删除: $successCount 个 OU" -ForegroundColor Green
+    } else {
+        Write-Host "成功删除: $successCount 个 OU" -ForegroundColor Green
+    }
+    Write-Host "跳过: $skippedCount 个 OU（需人工处理）" -ForegroundColor Yellow
     Write-Host "失败: $failedCount 个 OU" -ForegroundColor Red
 }
 catch {
-    Write-Host "错误: $_" -ForegroundColor Red
+    Write-Host "错误: $_ (第 $($_.InvocationInfo.ScriptLineNumber) 行: $($_.InvocationInfo.Line.Trim()))" -ForegroundColor Red
+    exit 1
 }
