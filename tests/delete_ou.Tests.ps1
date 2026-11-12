@@ -89,6 +89,13 @@ try {
     Check '报告了占用方位置' ($txt -match '已在另一个 OU 上: OU=销售部,OU=手工分组')
     Check '仍按位置保留（不删除）' (Has "OU=销售部,OU=业务中心,$BaseOU")
 
+    # 旧ID本身仍是飞书有效部门（该部门的本体）→ 不改写，报告
+    Write-Feishu ($feishu + , @('od-x', '部门X', '0')); Reset-AD
+    (Find-Obj "OU=销售部,OU=业务中心,$BaseOU").Description = 'od-x'
+    $txt = Run-Script -Ratio 1
+    Check '旧ID仍有效时不修正' ((Find-Obj "OU=销售部,OU=业务中心,$BaseOU").Description -eq 'od-x')
+    Check '报告了旧ID所属的飞书部门' ($txt -match '仍是飞书部门「部门X」的有效ID')
+
     Section '熔断（飞书数据不完整）'
     Write-Feishu @(, @('od-c', '业务中心', '0'))
     Reset-AD

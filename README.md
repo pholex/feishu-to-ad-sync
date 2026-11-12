@@ -115,7 +115,8 @@ TEST_VERBOSE=1 pwsh -NoProfile -File tests/run.ps1   # 同时打印被测脚本�
 
 | 测试文件 | 覆盖内容 |
 |---------|---------|
-| `tests/create_ou.Tests.ps1` | 部门 OU 移动时与同名 OU 的合并、停止条件、部门ID冲突按飞书判定 |
+| `tests/create_ou.Tests.ps1` | 部门 OU 移动时与同名 OU 的合并、停止条件、部门ID冲突按飞书判定、合并中途失败 |
+| `tests/create_ou.Main.Tests.ps1` | 整体运行部门同步：改名/移动遇到同名 OU、中间位置被占用、部门ID重复 |
 | `tests/delete_ou.Tests.ps1` | 残留 OU 判定与删除、部门ID修正、熔断 |
 
 修改 `powershell/create_ou.ps1` 或 `powershell/delete_ou.ps1` 后请先跑一遍；模拟 AD 只覆盖脚本用到的 cmdlet 行为，上线前仍建议在域控上用 `--dry-run` 预览。

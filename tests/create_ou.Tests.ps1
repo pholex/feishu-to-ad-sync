@@ -88,6 +88,9 @@ Expect-Refuse '目标 OU 链接了 GPO' { (Find-Obj $tgt).gPLink = '[LDAP://cn={
 Expect-Refuse '子 OU 设置阻止继承' { (Find-Obj "OU=客服一组,$tgt").gPOptions = 1 } '阻止继承'
 Expect-Refuse '有计算机对象' { New-Obj "CN=PC01,OU=临时组,$tgt" 'computer' } 'computer'
 Expect-Refuse '用户同名冲突' { New-Obj "CN=新员工A,$src" 'user' } '同名对象'
+Expect-Refuse '空壳目标设置了阻止继承（不能当空壳直接删）' {
+    foreach ($k in @($global:Store.Keys)) { if ($k.EndsWith(",$($tgt.ToLower())")) { $global:Store.Remove($k) } }
+    (Find-Obj $tgt).gPOptions = 1 } '阻止继承'
 Expect-Refuse '整体移入的 OU 部门ID（飞书中存在）在别处已有' { (Find-Obj "OU=临时组,$tgt").Description = 'od-cs2' } '部门ID重复'
 
 Section '部门ID冲突按飞书判定'
@@ -128,6 +131,21 @@ Reset-Base
 (Find-Obj "OU=临时组,$tgt").Description = 'od-stale'
 New-Obj "OU=旧组,OU=业务中心,$BaseOU" 'organizationalUnit' 'od-stale'
 Check '残留ID重复不算问题' (@(Get-MergeProblems -TargetDN $tgt -SourceDN $src).Count -eq 0)
+
+# adoptTarget 中途失败：不得出现两个 OU 带同一个有效ID（ID 改写须在目标 OU 删除之后）
+Reset-Base
+(Find-Obj "OU=客服一组,$src").Description = 'od-old'
+$global:FailOn["remove:$("OU=客服一组,$tgt".ToLower())"] = $true
+$threw = $false
+try { $null = Invoke-Logged { Clear-MoveTarget -TargetDN $tgt -SourceDN $src } } catch { $threw = $true }
+Check 'adoptTarget 中途失败：报错' $threw
+Check 'adoptTarget 中途失败：od-cs1 只在一个 OU 上' (@($global:Store.Values | Where-Object Description -eq 'od-cs1').Count -eq 1)
+Check 'adoptTarget 中途失败：源 OU 仍是旧ID' ((Find-Obj "OU=客服一组,$src").Description -eq 'od-old')
+
+Section 'Clear-MoveTarget 目标即自身'
+Reset-Base; $before = Snapshot
+$null = Invoke-Logged { Clear-MoveTarget -TargetDN $src.ToUpper() -SourceDN $src }
+Check '目标 DN 与源相同（大小写不同）时不做任何处理' ((Snapshot) -eq $before)
 
 Section 'Get-RDN'
 Check '普通 DN' ((Get-RDN 'OU=A,OU=B,DC=t') -eq 'OU=A')

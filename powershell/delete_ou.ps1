@@ -101,6 +101,14 @@ try {
         $want = $expectedDNs[$dnKey]
         $old = [string]$ou.Description
         if ($old -eq $want) { continue }
+        if ($old -and $feishuIds.ContainsKey($old)) {
+            # 旧ID本身仍是飞书中有效的部门：这个 OU 是该部门的本体（如飞书改名后又新建了同名部门、
+            # 而本次部门同步未能完成改名），改写会把它的人员/GUID/GPO 交给另一个部门
+            Write-Host "⚠ 未修正部门ID: $($ou.DistinguishedName) (Description='$old')" -ForegroundColor Yellow
+            Write-Host "    - 当前ID '$old' 仍是飞书部门「$($feishuIds[$old].dept_name)」的有效ID，此位置在飞书中属于 '$want'，需人工确认" -ForegroundColor Yellow
+            $idSkipped++
+            continue
+        }
         $owner = @($baseOUs | Where-Object { [string]$_.Description -eq $want -and $_.ObjectGUID -ne $ou.ObjectGUID }) | Select-Object -First 1
         if ($owner) {
             Write-Host "⚠ 未修正部门ID: $($ou.DistinguishedName) (Description='$old')" -ForegroundColor Yellow
