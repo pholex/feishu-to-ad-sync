@@ -7,7 +7,8 @@
 #            完全一致的 OU——即使 Description 不一致也保留（如飞书删除重建了同名部门、
 #            本次部门同步因上级失败未能修正其ID）——并顺带把其 Description 修正为飞书部门ID；
 #            以及以上 OU 的所有上级 OU（上级没有ID也保留，否则会把下面的有效部门一起拆掉）
-#   残留 OU：基础 OU 下（不含 DC_EXCLUDE_OU 子树）其余所有 OU
+#   残留 OU：基础 OU 下（不含 DC_EXCLUDE_OU、DC_RESIGNED_OU 子树）其余所有 OU。
+#            离职员工 OU 单独排除，不依赖它是否位于 DC_EXCLUDE_OU 之下——它可能为空，删掉后离职处理会失败
 #
 # 残留 OU 自底向上删除，只删"干净"的：没有链接 GPO、里面没有用户/计算机/组等任何非 OU 对象、
 # 子 OU 都已删除。不满足的不删也不移动，列出原因交人工处理。
@@ -35,6 +36,7 @@ if (Test-Path $configPath) {
 
 $BaseOU = $DC_BASE_OU
 $ExcludeOU = $DC_EXCLUDE_OU
+$ResignedOU = $DC_RESIGNED_OU
 
 $dnSplitter = [regex]::new('(?<!\\),')
 function Get-ParentDN { param($DN) return $dnSplitter.Split($DN, 2)[1] }
@@ -50,6 +52,7 @@ $title = if ($DryRun) { "===== 清理飞书中已不存在的部门 OU [DRY-RUN]
 Write-Host "`n$title" -ForegroundColor Cyan
 Write-Host "基础 OU: $BaseOU"
 if ($ExcludeOU) { Write-Host "排除 OU: $ExcludeOU" }
+if ($ResignedOU -and -not (Test-UnderDN $ResignedOU $ExcludeOU)) { Write-Host "排除 OU（离职员工）: $ResignedOU" }
 
 try {
     # ---- 飞书部门ID ----
@@ -74,9 +77,10 @@ try {
         $expectedDNs[(($parts + $BaseOU) -join ',').ToLower()] = $id
     }
 
-    # ---- AD 中的部门 OU（不含基础 OU 本身和排除子树）----
+    # ---- AD 中的部门 OU（不含基础 OU 本身、排除子树、离职员工 OU 子树）----
     $baseOUs = @(Get-ADOrganizationalUnit -Filter * -SearchBase $BaseOU -Properties Description, gPLink -ErrorAction Stop)
-    $allOUs = @($baseOUs | Where-Object { $_.DistinguishedName -ne $BaseOU -and -not (Test-UnderDN $_.DistinguishedName $ExcludeOU) })
+    $allOUs = @($baseOUs | Where-Object { $_.DistinguishedName -ne $BaseOU -and
+        -not (Test-UnderDN $_.DistinguishedName $ExcludeOU) -and -not (Test-UnderDN $_.DistinguishedName $ResignedOU) })
 
     # ---- 有效 OU 及其所有上级 ----
     $keep = @{}

@@ -127,12 +127,12 @@ function Remove-ADOrganizationalUnit { param($Identity, [switch]$Recursive, $Con
 
 # ---- 被测脚本运行环境 ----
 # 被测脚本从 $env:USERPROFILE 读取 dc_config.ps1 和 CSV：建临时目录并指向它
-function New-TestProfile($BaseOU, $ExcludeOU = '') {
+function New-TestProfile($BaseOU, $ExcludeOU = '', $ResignedOU = '') {
     $work = Join-Path ([System.IO.Path]::GetTempPath()) ("feishu-ad-sync-tests-" + [guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Force -Path $work | Out-Null
     $global:SavedUserProfile = $env:USERPROFILE
     $env:USERPROFILE = $work
-    $cfg = "`$DC_BASE_OU = `"$BaseOU`"`n`$DC_EXCLUDE_OU = `"$ExcludeOU`""
+    $cfg = "`$DC_BASE_OU = `"$BaseOU`"`n`$DC_EXCLUDE_OU = `"$ExcludeOU`"`n`$DC_RESIGNED_OU = `"$ResignedOU`""
     Set-Content -Path (Join-Path $work 'dc_config.ps1') -Encoding UTF8 -Value $cfg
     # 脚本用 Windows 路径 "$env:USERPROFILE\dc_config.ps1" 交给 .NET ReadAllText：非 Windows 上反斜杠不是分隔符，
     # 需另写一份字面文件名带反斜杠的副本（Windows 上就是同一个文件）

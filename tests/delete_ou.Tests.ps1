@@ -6,13 +6,14 @@ $ErrorActionPreference = 'Stop'
 $ScriptPath = (Resolve-Path (Join-Path $PSScriptRoot '../powershell/delete_ou.ps1')).Path
 $BaseOU = 'OU=员工,DC=t'
 $Exclude = "OU=其它,$BaseOU"
+$Resigned = "OU=已离职,$BaseOU"     # 离职员工 OU 故意不放在排除子树下，验证显式排除
 
 # 被测脚本从 $env:USERPROFILE 读取 dc_config.ps1 和 feishu_departments.csv，指向临时目录
 $work = Join-Path ([System.IO.Path]::GetTempPath()) ("feishu-ad-sync-tests-" + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Force -Path $work | Out-Null
 $savedProfile = $env:USERPROFILE
 $env:USERPROFILE = $work
-$cfg = "`$DC_BASE_OU = `"$BaseOU`"`n`$DC_EXCLUDE_OU = `"$Exclude`""
+$cfg = "`$DC_BASE_OU = `"$BaseOU`"`n`$DC_EXCLUDE_OU = `"$Exclude`"`n`$DC_RESIGNED_OU = `"$Resigned`""
 Set-Content -Path (Join-Path $work 'dc_config.ps1') -Encoding UTF8 -Value $cfg
 # 脚本用 Windows 路径 "$env:USERPROFILE\dc_config.ps1" 交给 .NET ReadAllText：非 Windows 上反斜杠不是分隔符，
 # 需另写一份字面文件名带反斜杠的副本（Windows 上就是同一个文件）
@@ -40,6 +41,8 @@ function Reset-AD {
     New-Obj "OU=带GPO,$BaseOU" 'organizationalUnit' -gplink '[LDAP://cn={X}]'      # 残留，链接 GPO → 跳过
     New-Obj $Exclude 'organizationalUnit'                                          # 排除子树 → 不动
     New-Obj "OU=离职员工,$Exclude" 'organizationalUnit'
+    New-Obj $Resigned 'organizationalUnit'                                         # 离职员工 OU（空、不在排除子树下）→ 不动
+    New-Obj "OU=2025,$Resigned" 'organizationalUnit'
 }
 function Run-Script { param([switch]$DryRun, $Ratio)
     $a = @{}; if ($DryRun) { $a.DryRun = $true }; if ($null -ne $Ratio) { $a.MaxDeleteRatio = $Ratio }
@@ -69,6 +72,7 @@ try {
     Check '子 OU 删不掉时上级也不删' (Has "OU=旧父,$BaseOU")
     Check '链接 GPO 的残留 OU 不删' (Has "OU=带GPO,$BaseOU")
     Check '排除子树不动' ((Has $Exclude) -and (Has "OU=离职员工,$Exclude"))
+    Check '离职员工 OU（不在排除子树下、且为空）不动' ((Has $Resigned) -and (Has "OU=2025,$Resigned"))
     Check '跳过原因列出了用户' ($txt -match '包含对象: \[user\] 服务账号')
     Check '跳过原因列出了 GPO' ($txt -match '链接了 GPO')
     Check '上级只记一行"子 OU 未能删除"' ($txt -match 'OU=旧父,.*子 OU 未能删除')
