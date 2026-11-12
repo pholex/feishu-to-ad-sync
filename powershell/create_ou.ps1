@@ -66,14 +66,53 @@ function Test-OUExists {
 # 无人值守运行，遇到以下情况一律不动、列出问题让人工处理：
 #   - 要删除的 OU 链接了 GPO 或设置了阻止继承（删除会丢失）
 #   - 存在用户以外的对象（计算机/组/联系人等：换 OU 可能改变适用的 GPO 或外部引用）
-#   - 同名 OU 的部门ID不一致（不是同一个部门）
+#   - 同名 OU 的部门ID不一致且无法按飞书判定（见 Resolve-DeptIdConflict）
 #   - 要移入的对象在源 OU 里已有同名对象
-#   - 整体移入的 OU 带有部门ID且该ID在别处已存在（会导致按ID查找到两个 OU）
+#   - 整体移入的 OU 带有飞书中存在的部门ID，且该ID在别处已有 OU（会导致按ID查找到两个 OU）
+
+# 飞书部门表：dept_id -> 部门行（主流程加载 CSV 后填充），用于判定部门ID是否仍有效
+$script:FeishuDepts = @{}
 
 # 取 DN 的第一段 RDN（跳过转义的逗号，如 CN=Zhang\, San）
 function Get-RDN {
     param($DN)
     return [regex]::new('(?<!\\),').Split($DN, 2)[0]
+}
+
+# OU 的上级部门ID：父 OU 为基础 OU 时为 "0"（与飞书 parent_dept_id 约定一致）
+function Get-ParentDeptId {
+    param($DN)
+    $parentDN = [regex]::new('(?<!\\),').Split($DN, 2)[1]
+    if ($parentDN -eq $BaseOU) { return '0' }
+    return [string](Get-ADObject -Identity $parentDN -Properties Description -ErrorAction Stop).Description
+}
+
+# 同名 OU 部门ID不一致时，按飞书判定保留哪个ID：
+#   same        目标无ID或两者相同            → 正常合并
+#   keepSource  目标ID在飞书中已不存在（残留）→ 合并，丢弃目标ID
+#   adoptTarget 源ID已不存在、目标ID仍有效，且飞书中该部门的名称/上级与此位置一致
+#               → 合并，并把源 OU 的 Description 改为目标ID（源 OU 对象/GUID 保留）
+#   conflict    两个ID在飞书中都存在，或目标ID在飞书中属于别处 → 不能自动合并
+# ParentDeptId：合并完成后源 OU 的上级部门ID（上级本身可能刚被 adoptTarget 改过ID）
+function Resolve-DeptIdConflict {
+    param($T, $S, $ParentDeptId)
+    $tId = [string]$T.Description
+    $sId = [string]$S.Description
+    if (-not $tId -or $tId -eq $sId) { return @{ Action = 'same'; EffectiveId = $sId } }
+
+    $tLive = $script:FeishuDepts.ContainsKey($tId)
+    $sLive = $sId -and $script:FeishuDepts.ContainsKey($sId)
+    if ($tLive -and $sLive) {
+        return @{ Action = 'conflict'; Reason = "两个部门ID在飞书中都存在，是两个不同的部门: $($T.DistinguishedName) (Description='$tId') vs 源 $($S.DistinguishedName) (Description='$sId')" }
+    }
+    if (-not $tLive) {
+        return @{ Action = 'keepSource'; EffectiveId = $sId; Note = "目标OU的部门ID '$tId' 在飞书中已不存在，保留源OU的部门ID '$sId'" }
+    }
+    $row = $script:FeishuDepts[$tId]
+    if ($row.dept_name -ne $S.Name -or [string]$row.parent_dept_id -ne [string]$ParentDeptId) {
+        return @{ Action = 'conflict'; Reason = "目标OU的部门ID '$tId' 在飞书中是「$($row.dept_name)」(上级ID $($row.parent_dept_id))，与合并后的位置不符: $($T.DistinguishedName)" }
+    }
+    return @{ Action = 'adoptTarget'; EffectiveId = $tId; Note = "源OU的部门ID '$sId' 在飞书中已不存在，采用目标OU的部门ID '$tId'" }
 }
 
 function Test-ADObjectExists {
@@ -137,7 +176,8 @@ function Get-MoveInProblems {
     $objs = @(Get-ADObject -SearchBase $DN -SearchScope Subtree -Filter * -Properties Description -ErrorAction Stop)
     foreach ($o in $objs) {
         if ($o.ObjectClass -eq 'organizationalUnit') {
-            if ($o.Description) {
+            # 只有飞书中仍存在的部门ID才会被按ID查找，残留ID重复无影响
+            if ($o.Description -and $script:FeishuDepts.ContainsKey([string]$o.Description)) {
                 $d = $o.Description
                 $dupes = @(Get-ADOrganizationalUnit -Filter { Description -eq $d } -SearchBase $BaseOU -ErrorAction Stop |
                     Where-Object { $_.ObjectGUID -ne $o.ObjectGUID })
@@ -153,21 +193,21 @@ function Get-MoveInProblems {
 
 # 预检（只读）：检查能否把 TargetDN 合并进 SourceDN，输出问题描述（无输出=可以合并）
 function Get-MergeProblems {
-    param($TargetDN, $SourceDN)
+    param($TargetDN, $SourceDN, $ParentDeptId)
     $t = Get-ADObject -Identity $TargetDN -Properties Description, gPLink, gPOptions -ErrorAction Stop
     $s = Get-ADObject -Identity $SourceDN -Properties Description -ErrorAction Stop
     if (Test-HasGPLink $t) { "链接了 GPO，合并后删除会丢失链接: $TargetDN" }
     if ($t.gPOptions -eq 1) { "设置了阻止继承，合并后删除会丢失该设置: $TargetDN" }
-    if ($t.Description -and $t.Description -ne $s.Description) {
-        "部门ID不一致，不是同一部门: $TargetDN (Description='$($t.Description)') vs 源 $SourceDN (Description='$($s.Description)')"
-    }
+    if ($null -eq $ParentDeptId) { $ParentDeptId = Get-ParentDeptId $SourceDN }
+    $res = Resolve-DeptIdConflict -T $t -S $s -ParentDeptId $ParentDeptId
+    if ($res.Action -eq 'conflict') { $res.Reason; return }    # ID 冲突时不再深入检查子对象
 
     $children = @(Get-ADObject -SearchBase $TargetDN -SearchScope OneLevel -Filter * -ErrorAction Stop)
     foreach ($c in $children) {
         $destDN = "$(Get-RDN $c.DistinguishedName),$SourceDN"
         if ($c.ObjectClass -eq 'organizationalUnit') {
             if (Test-ADObjectExists $destDN) {
-                Get-MergeProblems -TargetDN $c.DistinguishedName -SourceDN $destDN    # 两边都有：递归合并
+                Get-MergeProblems -TargetDN $c.DistinguishedName -SourceDN $destDN -ParentDeptId $res.EffectiveId    # 两边都有：递归合并
             } elseif (-not (Test-IsShellOU -DN $c.DistinguishedName)) {
                 Get-MoveInProblems -DN $c.DistinguishedName                            # 源里没有：整体移入
             }                                                                          # 源里没有且是空壳：直接删除，无需检查
@@ -181,13 +221,27 @@ function Get-MergeProblems {
 
 # 执行合并（须先通过 Get-MergeProblems 预检）：TargetDN 的内容并入 SourceDN，然后删除已清空的 TargetDN
 function Merge-OUInto {
-    param($TargetDN, $SourceDN, [switch]$DryRun)
+    param($TargetDN, $SourceDN, $ParentDeptId, [switch]$DryRun)
     $prefix = if ($DryRun) { "[DRY-RUN]   将" } else { "    ✓ 已" }
+
+    # 部门ID按飞书判定（预检已排除 conflict）
+    $t = Get-ADObject -Identity $TargetDN -Properties Description -ErrorAction Stop
+    $s = Get-ADObject -Identity $SourceDN -Properties Description -ErrorAction Stop
+    if ($null -eq $ParentDeptId) { $ParentDeptId = Get-ParentDeptId $SourceDN }
+    $res = Resolve-DeptIdConflict -T $t -S $s -ParentDeptId $ParentDeptId
+    if ($res.Action -eq 'conflict') { throw $res.Reason }
+    if ($res.Note) { Write-Host "    ⓘ $($res.Note): $SourceDN" -ForegroundColor Yellow }
+    if ($res.Action -eq 'adoptTarget') {
+        $oldId = [string]$s.Description
+        if (-not $DryRun) { Set-ADOrganizationalUnit -Identity $s.ObjectGUID -Description $res.EffectiveId -ErrorAction Stop }
+        Write-Host "${prefix}更新源OU的部门ID: $SourceDN Description '$oldId' -> '$($res.EffectiveId)'" -ForegroundColor Yellow
+    }
+
     $children = @(Get-ADObject -SearchBase $TargetDN -SearchScope OneLevel -Filter * -ErrorAction Stop)
     foreach ($c in $children) {
         $destDN = "$(Get-RDN $c.DistinguishedName),$SourceDN"
         if ($c.ObjectClass -eq 'organizationalUnit' -and (Test-ADObjectExists $destDN)) {
-            Merge-OUInto -TargetDN $c.DistinguishedName -SourceDN $destDN -DryRun:$DryRun
+            Merge-OUInto -TargetDN $c.DistinguishedName -SourceDN $destDN -ParentDeptId $res.EffectiveId -DryRun:$DryRun
         } elseif ($c.ObjectClass -eq 'organizationalUnit' -and (Test-IsShellOU -DN $c.DistinguishedName)) {
             if (-not $DryRun) { Remove-ShellOU -DN $c.DistinguishedName }
             Write-Host "${prefix}删除空壳OU: $($c.DistinguishedName)" -ForegroundColor Yellow
@@ -275,6 +329,7 @@ try {
     
     # 拓扑排序：确保父OU在子OU之前创建
     $departments = Sort-DepartmentsByDependency -Departments $departments
+    foreach ($d in $departments) { $script:FeishuDepts[[string]$d.dept_id] = $d }
     
     # 记录统计
     $successCount = 0
