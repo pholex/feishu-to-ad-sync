@@ -60,14 +60,16 @@ function Test-OUExists {
 
 # 判断 OU 是否为"空壳"：整棵子树只有 OU，且都没有 Description（部门ID）
 # 典型来源：旧版脚本在父 OU 移动失败后，为子部门自动补建的无 ID 父 OU
+function Get-ShellBlockers {
+    # 返回让该 OU 不能算作空壳的对象：非 OU 对象（用户/组/计算机等），或带 Description 的 OU
+    param($DN)
+    $objs = @(Get-ADObject -SearchBase $DN -SearchScope Subtree -Filter * -Properties Description -ErrorAction Stop)
+    return @($objs | Where-Object { $_.ObjectClass -ne 'organizationalUnit' -or $_.Description })
+}
+
 function Test-IsShellOU {
     param($DN)
-    $objs = Get-ADObject -SearchBase $DN -SearchScope Subtree -Filter * -Properties Description -ErrorAction Stop
-    foreach ($o in $objs) {
-        if ($o.ObjectClass -ne 'organizationalUnit') { return $false }
-        if ($o.Description) { return $false }
-    }
-    return $true
+    return (@(Get-ShellBlockers -DN $DN).Count -eq 0)
 }
 
 # 删除空壳 OU（含其下的空壳子 OU），先解除"防止意外删除"
@@ -101,8 +103,16 @@ function Move-OUSafely {
 function Clear-MoveTarget {
     param($TargetDN, [switch]$DryRun)
     if (-not (Test-OUExists -DN $TargetDN)) { return }
-    if (-not (Test-IsShellOU -DN $TargetDN)) {
-        throw "目标位置已存在同名OU且其中有用户或带部门ID的子OU，需人工合并: $TargetDN"
+    $blockers = @(Get-ShellBlockers -DN $TargetDN)
+    if ($blockers.Count -gt 0) {
+        # 列出挡路的对象，免得再手动去域控上查
+        $maxShow = 20
+        $lines = $blockers | Select-Object -First $maxShow | ForEach-Object {
+            $desc = if ($_.Description) { " Description='$($_.Description)'" } else { "" }
+            "      - [$($_.ObjectClass)] $($_.Name)$desc  ($($_.DistinguishedName))"
+        }
+        if ($blockers.Count -gt $maxShow) { $lines += "      ... 共 $($blockers.Count) 个，仅显示前 $maxShow 个" }
+        throw ("目标位置已存在同名OU且非空壳，需人工合并: $TargetDN`n    挡路对象 ($($blockers.Count) 个，非OU对象或带Description的OU):`n" + ($lines -join "`n"))
     }
     if ($DryRun) {
         Write-Host "[DRY-RUN] 将删除目标位置的空壳OU（无部门ID、无用户）- $TargetDN" -ForegroundColor Cyan

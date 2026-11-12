@@ -26,9 +26,9 @@ try {
     $users = Get-ADUser -Filter * -SearchBase $BaseOU -Properties SamAccountName, EmailAddress, Mobile, EmployeeID, EmployeeNumber, info, DisplayName, Enabled, DistinguishedName
     
     # 排除指定 OU，但离职员工 OU 总是包含
-    $filteredUsers = $users | Where-Object {
+    $filteredUsers = @($users | Where-Object {
         ($_.DistinguishedName -notlike "*$ExcludeOU") -or ($_.DistinguishedName -like "*$DC_RESIGNED_OU*")
-    }
+    })
     
     if ($filteredUsers) {
         # 导出到CSV

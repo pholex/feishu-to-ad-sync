@@ -44,7 +44,7 @@ try {
     }
     
     # 按深度降序排序（深层级先删除）
-    $ouList = $ouList | Sort-Object -Property Depth -Descending
+    $ouList = @($ouList | Sort-Object -Property Depth -Descending)
     
     Write-Host "`n===== 删除多余的 OU =====" -ForegroundColor Cyan
     Write-Host "基础 OU: $BaseOU"
@@ -63,8 +63,8 @@ try {
             }
             
             # 检查 OU 是否为空（没有用户和子 OU）
-            $users = Get-ADUser -Filter * -SearchBase $ouDN -SearchScope OneLevel
-            $childOUs = Get-ADOrganizationalUnit -Filter * -SearchBase $ouDN -SearchScope OneLevel
+            $users = @(Get-ADUser -Filter * -SearchBase $ouDN -SearchScope OneLevel)
+            $childOUs = @(Get-ADOrganizationalUnit -Filter * -SearchBase $ouDN -SearchScope OneLevel)
             
             if ($users.Count -eq 0 -and $childOUs.Count -eq 0) {
                 # OU 为空，可以删除
@@ -121,8 +121,8 @@ try {
                 }
                 
                 # 再次检查是否为空
-                $remainingUsers = Get-ADUser -Filter * -SearchBase $ouDN -SearchScope OneLevel
-                $remainingChildOUs = Get-ADOrganizationalUnit -Filter * -SearchBase $ouDN -SearchScope OneLevel
+                $remainingUsers = @(Get-ADUser -Filter * -SearchBase $ouDN -SearchScope OneLevel)
+                $remainingChildOUs = @(Get-ADOrganizationalUnit -Filter * -SearchBase $ouDN -SearchScope OneLevel)
                 
                 if ($remainingUsers.Count -eq 0 -and $remainingChildOUs.Count -eq 0) {
                     Set-ADOrganizationalUnit -Identity $ouDN -ProtectedFromAccidentalDeletion $false
