@@ -99,6 +99,34 @@ try {
     Check 'DryRun：AD 不变' ((Snapshot) -eq $before)
     Check 'DryRun：预览中给出无法合并的原因' ($txt -match '无法自动合并' -and $txt -match 'computer')
 
+    Section '部门名含 DN 特殊字符：新建'
+    $special = $moveRename + @(, @('od-rd', '研发,测试组', 'od-sh')) + @(, @('od-ab', 'A+B "组"', 'od-rd')) + @(, @('od-sp', ' 首尾空格 ', 'od-sh'))
+    Write-FeishuDepts $work $special; Reset-AD
+    $txt = Run-Script
+    $rd = "OU=研发\,测试组,$sh"
+    $ab = "OU=A\+B \`"组\`",$rd"
+    Check '特殊字符：含逗号的部门 OU 已创建且ID正确' ((Has $rd) -and ((Find-Obj $rd).Description -eq 'od-rd'))
+    Check '特殊字符：OU 名称为原始名称（未带转义符）' ((Find-Obj $rd).Name -ceq '研发,测试组')
+    Check '特殊字符：子部门创建在正确的上级下' ((Has $ab) -and ((Find-Obj $ab).Description -eq 'od-ab'))
+    Check '特殊字符：首尾空格的部门名' ((Has "OU=\ 首尾空格\ ,$sh") -and ((Find-Obj "OU=\ 首尾空格\ ,$sh").Name -ceq ' 首尾空格 '))
+    Check '特殊字符：没有在错误位置多建 OU' (-not (Has "OU=研发,$sh") -and -not (Has "OU=A,$sh"))
+    Check '特殊字符：无失败' ($txt -notmatch '处理失败|创建失败|跳过 -')
+
+    Section '部门名含 DN 特殊字符：已就位时无需变更'
+    $before = Snapshot
+    $txt = Run-Script
+    Check '特殊字符：再次运行 AD 不变' ((Snapshot) -eq $before)
+    Check '特殊字符：再次运行不移动/不重命名/不新建' ($txt -notmatch '已移动|已重命名|成功创建|处理失败')
+
+    Section '部门名含 DN 特殊字符：改名为含逗号的名称并移动'
+    $renameSpecial = @(@('od-hq', '总部', '0'), @('od-sh', '共享中心', '0'), @('od-svc', '服务,支持', 'od-sh'), @('od-g1', '一组', 'od-svc'))
+    Write-FeishuDepts $work $renameSpecial; Reset-AD
+    $txt = Run-Script
+    $fs = "OU=服务\,支持,$sh"
+    Check '特殊字符改名：部门到达最终位置且ID不变' ((Has $fs) -and ((Find-Obj $fs).Description -eq 'od-svc'))
+    Check '特殊字符改名：用户与子部门随之' ((Has "CN=员工甲,$fs") -and (Has "CN=员工乙,OU=一组,$fs"))
+    Check '特殊字符改名：子部门无需再处理' ($txt -notmatch '处理失败')
+
     Section '部门ID重复'
     Write-FeishuDepts $work $moveRename; Reset-AD
     New-Obj "OU=客服副本,$hq" 'organizationalUnit' 'od-svc'

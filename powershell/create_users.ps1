@@ -16,6 +16,14 @@ if (Test-Path $configPath) {
     exit 1
 }
 
+# 加载 DN 转义/比较工具（与配置一同上传到域控，见 DnUtils.ps1）
+$dnUtilsPath = "$env:USERPROFILE\DnUtils.ps1"
+if (-not (Test-Path $dnUtilsPath)) {
+    Write-Error "DN 工具不存在: $dnUtilsPath"
+    exit 1
+}
+. $dnUtilsPath
+
 # 使用配置文件中的变量
 $BaseOU = $DC_BASE_OU
 $Domain = $DC_DOMAIN
@@ -55,14 +63,8 @@ try {
         # 构建 OU 路径
         # 飞书路径格式：父部门\子部门 (如：物流部\头程组)
         # AD路径格式：OU=子部门,OU=父部门,OU=员工,DC=... (如：OU=头程组,OU=物流部,OU=员工,DC=...)
-        $ouPath = $BaseOU
-        if ($deptName) {
-            $deptParts = $deptName -split '\\'
-            # 从前往后遍历（父部门到子部门），依次插入到 BaseOU 前
-            foreach ($part in $deptParts) {
-                $ouPath = "OU=$part,$ouPath"
-            }
-        }
+        # 部门名逐段转义（见 DnUtils.ps1）；部门路径优先取 DepartmentPath（JSON 数组）
+        $ouPath = Join-OUPath -Names (Get-UserDeptPath $user) -BaseOU $BaseOU
         
         # 生成随机密码（包含大小写字母、数字和特殊字符）
         $upperCase = [char[]]'ABCDEFGHIJKLMNOPQRSTUVWXYZ'

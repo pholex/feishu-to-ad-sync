@@ -16,6 +16,14 @@ if (Test-Path $configPath) {
     exit 1
 }
 
+# 加载 DN 转义/比较工具（与配置一同上传到域控，见 DnUtils.ps1）
+$dnUtilsPath = "$env:USERPROFILE\DnUtils.ps1"
+if (-not (Test-Path $dnUtilsPath)) {
+    Write-Error "DN 工具不存在: $dnUtilsPath"
+    exit 1
+}
+. $dnUtilsPath
+
 # 使用配置文件中的变量
 $BaseOU = $DC_BASE_OU
 
@@ -40,10 +48,10 @@ function Get-OUPath {
     
     $parentId = $dept.parent_dept_id
     if ($parentId -eq "0") {
-        return "OU=$($dept.dept_name),$BaseOU"
+        return "OU=$(ConvertTo-RdnValue $dept.dept_name),$BaseOU"
     } else {
         $parentPath = Get-OUPath -DepartmentId $parentId -Departments $Departments -BaseOU $BaseOU
-        return "OU=$($dept.dept_name),$parentPath"
+        return "OU=$(ConvertTo-RdnValue $dept.dept_name),$parentPath"
     }
 }
 
@@ -73,17 +81,11 @@ function Test-OUExists {
 # 飞书部门表：dept_id -> 部门行（主流程加载 CSV 后填充），用于判定部门ID是否仍有效
 $script:FeishuDepts = @{}
 
-# 取 DN 的第一段 RDN（跳过转义的逗号，如 CN=Zhang\, San）
-function Get-RDN {
-    param($DN)
-    return [regex]::new('(?<!\\),').Split($DN, 2)[0]
-}
-
 # OU 的上级部门ID：父 OU 为基础 OU 时为 "0"（与飞书 parent_dept_id 约定一致）
 function Get-ParentDeptId {
     param($DN)
-    $parentDN = [regex]::new('(?<!\\),').Split($DN, 2)[1]
-    if ($parentDN -eq $BaseOU) { return '0' }
+    $parentDN = Get-ParentDN $DN
+    if (Test-SameDN $parentDN $BaseOU) { return '0' }
     return [string](Get-ADObject -Identity $parentDN -Properties Description -ErrorAction Stop).Description
 }
 
@@ -265,7 +267,7 @@ function Merge-OUInto {
 # 移动前处理目标位置的同名 OU：空壳直接删除；否则预检通过后合并进源 OU；预检不过则报错并列出问题
 function Clear-MoveTarget {
     param($TargetDN, $SourceDN, [switch]$DryRun)
-    if ($TargetDN -eq $SourceDN) { return }    # 目标就是源自身（DN 比较不区分大小写），不能把自己并进自己
+    if (Test-SameDN $TargetDN $SourceDN) { return }    # 目标就是源自身（如仅大小写/转义写法不同），不能把自己并进自己
     if (-not (Test-OUExists -DN $TargetDN)) { return }
 
     if (Test-IsShellOU -DN $TargetDN) {
@@ -378,7 +380,8 @@ try {
             # Write-Host "  调试: $deptName 的父路径: $parentPath" -ForegroundColor Gray
             
             # 期望的 DN 和 Description
-            $expectedDN = "OU=$deptName,$parentPath"
+            $deptRdn = ConvertTo-RdnValue $deptName
+            $expectedDN = "OU=$deptRdn,$parentPath"
             $expectedDesc = $deptId
             
             # 检查父OU是否存在。部门已按拓扑序处理，父部门总是先于子部门被创建/移动，
@@ -407,26 +410,27 @@ try {
                 $currentDN = $existingOUByID.DistinguishedName
                 $currentName = $existingOUByID.Name
                 
-                if ($currentDN -eq $expectedDN) {
+                if (Test-SameDN $currentDN $expectedDN) {
                     # 位置和名称都正确
                     $skippedCount++
                 } else {
                     # 需要重命名和/或移动
-                    $currentParent = ($currentDN -split ',',2)[1]
+                    $currentParent = Get-ParentDN $currentDN
+                    $currentRdn = ConvertTo-RdnValue $currentName
                     $needRename = ($currentName -ne $deptName)
-                    $needMove = ($currentParent -ne $parentPath)
+                    $needMove = -not (Test-SameDN $currentParent $parentPath)
 
                     # 既移动又改名时要经过一个中间位置：先移动 → OU=旧名,新父；先改名 → OU=新名,旧父。
                     # 中间位置上的同名 OU 与本部门无关，不能合并，选一个空着的顺序；都被占用则放弃。
                     $order = if ($needMove -and $needRename) {
-                        if (-not (Test-OUExists -DN "OU=$currentName,$parentPath")) { 'moveFirst' }
-                        elseif (-not (Test-OUExists -DN "OU=$deptName,$currentParent")) { 'renameFirst' }
+                        if (-not (Test-OUExists -DN "OU=$currentRdn,$parentPath")) { 'moveFirst' }
+                        elseif (-not (Test-OUExists -DN "OU=$deptRdn,$currentParent")) { 'renameFirst' }
                         else { 'blocked' }
                     } elseif ($needMove) { 'moveOnly' } else { 'renameOnly' }
 
                     try {
                         if ($order -eq 'blocked') {
-                            throw "移动并改名需经过的两个中间位置都已有同名OU: OU=$currentName,$parentPath / OU=$deptName,$currentParent"
+                            throw "移动并改名需经过的两个中间位置都已有同名OU: OU=$currentRdn,$parentPath / OU=$deptRdn,$currentParent"
                         }
                         # 最终位置（新名,新父）上的同名 OU：空壳删除，否则并入本部门 OU（预检不过则报错）
                         Clear-MoveTarget -TargetDN $expectedDN -SourceDN $currentDN -DryRun:$DryRun
@@ -447,7 +451,7 @@ try {
                                 Rename-ADObject -Identity $currentDN -NewName $deptName -ErrorAction Stop
                                 Write-Host "✓ 已重命名 - $currentName -> $deptName" -ForegroundColor Cyan
                                 $renamedCount++
-                                $currentDN = "OU=$deptName,$currentParent"
+                                $currentDN = "OU=$deptRdn,$currentParent"
                             }
                             if ($needMove) {
                                 Move-ObjectSafely -DN $currentDN -TargetPath $parentPath
@@ -515,7 +519,7 @@ try {
                     # 目标位置没有，检查是否有同名OU在其他位置
                     $existingOUByName = Get-ADOrganizationalUnit -Filter {Name -eq $deptName} -SearchBase $BaseOU -Properties Description,DistinguishedName -ErrorAction SilentlyContinue | Select-Object -First 1
                     
-                    if ($existingOUByName -and $existingOUByName.DistinguishedName -ne $expectedDN) {
+                    if ($existingOUByName -and -not (Test-SameDN $existingOUByName.DistinguishedName $expectedDN)) {
                         # 找到同名OU在其他位置
                         $oldDN = $existingOUByName.DistinguishedName
                         $oldDesc = $existingOUByName.Description
@@ -527,7 +531,7 @@ try {
                                 $movedCount++
                             } else {
                                 try {
-                                    Clear-MoveTarget -TargetDN "OU=$deptName,$parentPath" -SourceDN $oldDN
+                                    Clear-MoveTarget -TargetDN $expectedDN -SourceDN $oldDN
                                     Move-ObjectSafely -DN $oldDN -TargetPath $parentPath
                                     Write-Host "✓ 已移动 - $deptName 从其他位置到 $parentPath" -ForegroundColor Cyan
                                     $movedCount++

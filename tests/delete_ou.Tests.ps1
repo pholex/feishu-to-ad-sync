@@ -8,17 +8,8 @@ $BaseOU = 'OU=员工,DC=t'
 $Exclude = "OU=其它,$BaseOU"
 $Resigned = "OU=已离职,$BaseOU"     # 离职员工 OU 故意不放在排除子树下，验证显式排除
 
-# 被测脚本从 $env:USERPROFILE 读取 dc_config.ps1 和 feishu_departments.csv，指向临时目录
-$work = Join-Path ([System.IO.Path]::GetTempPath()) ("feishu-ad-sync-tests-" + [guid]::NewGuid().ToString('N'))
-New-Item -ItemType Directory -Force -Path $work | Out-Null
-$savedProfile = $env:USERPROFILE
-$env:USERPROFILE = $work
-$cfg = "`$DC_BASE_OU = `"$BaseOU`"`n`$DC_EXCLUDE_OU = `"$Exclude`"`n`$DC_RESIGNED_OU = `"$Resigned`""
-Set-Content -Path (Join-Path $work 'dc_config.ps1') -Encoding UTF8 -Value $cfg
-# 脚本用 Windows 路径 "$env:USERPROFILE\dc_config.ps1" 交给 .NET ReadAllText：非 Windows 上反斜杠不是分隔符，
-# 需另写一份字面文件名带反斜杠的副本（Windows 上就是同一个文件）
-$cfgWinPath = "$work\dc_config.ps1"
-[System.IO.File]::WriteAllText($cfgWinPath, $cfg)
+# 被测脚本从 $env:USERPROFILE 读取 dc_config.ps1、DnUtils.ps1 和 feishu_departments.csv，指向临时目录
+$work = New-TestProfile $BaseOU $Exclude $Resigned
 
 function Write-Feishu($rows) {
     $rows | ForEach-Object { [pscustomobject]@{ dept_id = $_[0]; dept_name = $_[1]; parent_dept_id = $_[2] } } |
@@ -100,6 +91,15 @@ try {
     Check '旧ID仍有效时不修正' ((Find-Obj "OU=销售部,OU=业务中心,$BaseOU").Description -eq 'od-x')
     Check '报告了旧ID所属的飞书部门' ($txt -match '仍是飞书部门「部门X」的有效ID')
 
+    Section '部门名含 DN 特殊字符'
+    Write-Feishu ($feishu + , @('od-k', '客服,售后', 'od-c')); Reset-AD
+    New-Obj "OU=客服\,售后,OU=业务中心,$BaseOU" 'organizationalUnit' 'od-k-old'      # 位置一致、ID 不对
+    New-Obj "OU=旧\+组,$BaseOU" 'organizationalUnit' 'od-old2'                      # 残留、空
+    $txt = Run-Script -Ratio 1
+    Check '特殊字符：位置一致的 OU 保留并修正ID' ((Has "OU=客服\,售后,OU=业务中心,$BaseOU") -and ((Find-Obj "OU=客服\,售后,OU=业务中心,$BaseOU").Description -eq 'od-k'))
+    Check '特殊字符：残留 OU 被删除' (-not (Has "OU=旧\+组,$BaseOU"))
+    Check '特殊字符：无失败' ($txt -match '失败: 0 个 OU')
+
     Section '熔断（飞书数据不完整）'
     Write-Feishu @(, @('od-c', '业务中心', '0'))
     Reset-AD
@@ -125,9 +125,7 @@ try {
     Check '无残留时提示无需清理' ($txt -match '没有需要清理的 OU')
 }
 finally {
-    $env:USERPROFILE = $savedProfile
-    Remove-Item -LiteralPath $cfgWinPath -Force -ErrorAction SilentlyContinue
-    Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-TestProfile $work
 }
 
 Complete-Tests

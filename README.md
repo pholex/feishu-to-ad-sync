@@ -102,7 +102,10 @@ python3 sync_to_ad.py
 7. 清理飞书中已不存在的部门 OU（按部门ID判定，见 `powershell/delete_ou.ps1` 头部注释）
    - 只删除空的残留 OU；含用户等对象或链接了 GPO 的不删，列出原因
    - 位置与飞书部门一致但部门ID不对的 OU，修正为飞书部门ID
-   - 残留数超过现有部门 OU 的 20% 时整体跳过（疑似飞书数据不完整）
+   - 残留数超过现有部门 OU 的 20% 时整体跳过（疑似飞书数据不完整）；核对清单后可设 `OU_CLEANUP_MAX_RATIO=1` 重新运行
+
+部门名可含 DN 特殊字符（`,` `+` `"` `\` `<` `>` `;` `=`、首尾空格、开头的 `#`）：各脚本拼 DN 时统一转义、比较 DN 时先规范化，
+工具函数在 `powershell/DnUtils.ps1`，运行时随配置一起上传到域控。
 
 ## 回归测试
 
@@ -116,10 +119,12 @@ TEST_VERBOSE=1 pwsh -NoProfile -File tests/run.ps1   # 同时打印被测脚本�
 | 测试文件 | 覆盖内容 |
 |---------|---------|
 | `tests/create_ou.Tests.ps1` | 部门 OU 移动时与同名 OU 的合并、停止条件、部门ID冲突按飞书判定、合并中途失败 |
-| `tests/create_ou.Main.Tests.ps1` | 整体运行部门同步：改名/移动遇到同名 OU、中间位置被占用、部门ID重复 |
-| `tests/delete_ou.Tests.ps1` | 残留 OU 判定与删除、部门ID修正、熔断 |
+| `tests/create_ou.Main.Tests.ps1` | 整体运行部门同步：改名/移动遇到同名 OU、中间位置被占用、部门ID重复、部门名含特殊字符 |
+| `tests/update_users.Tests.ps1` | 整体运行用户更新：按部门路径移动用户（部门名含特殊字符、新旧路径格式） |
+| `tests/DnUtils.Tests.ps1` | DN 转义、拆分、规范化比较 |
+| `tests/delete_ou.Tests.ps1` | 残留 OU 判定与删除、部门ID修正、熔断、离职员工 OU 排除、部门名含特殊字符 |
 
-修改 `powershell/create_ou.ps1` 或 `powershell/delete_ou.ps1` 后请先跑一遍；模拟 AD 只覆盖脚本用到的 cmdlet 行为，上线前仍建议在域控上用 `--dry-run` 预览。
+修改 `powershell/` 下的脚本后请先跑一遍；模拟 AD 只覆盖脚本用到的 cmdlet 行为，上线前仍建议在域控上用 `--dry-run` 预览。
 
 ## 字段映射
 

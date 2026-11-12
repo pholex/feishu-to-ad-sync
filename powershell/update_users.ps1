@@ -16,6 +16,14 @@ if (Test-Path $configPath) {
     exit 1
 }
 
+# 加载 DN 转义/比较工具（与配置一同上传到域控，见 DnUtils.ps1）
+$dnUtilsPath = "$env:USERPROFILE\DnUtils.ps1"
+if (-not (Test-Path $dnUtilsPath)) {
+    Write-Error "DN 工具不存在: $dnUtilsPath"
+    exit 1
+}
+. $dnUtilsPath
+
 # 使用配置文件中的变量
 $BaseOU = $DC_BASE_OU
 
@@ -52,14 +60,8 @@ try {
         $info = [string]$user.info
         $deptName = [string]$user.DepartmentName
         
-        # 构建期望的 OU 路径
-        $expectedOUPath = $BaseOU
-        if ($deptName) {
-            $deptParts = $deptName -split '\\'
-            foreach ($part in $deptParts) {
-                $expectedOUPath = "OU=$part,$expectedOUPath"
-            }
-        }
+        # 构建期望的 OU 路径（部门名逐段转义，见 DnUtils.ps1）
+        $expectedOUPath = Join-OUPath -Names (Get-UserDeptPath $user) -BaseOU $BaseOU
         
         try {
             # 获取现有用户
@@ -106,9 +108,9 @@ try {
             }
             
             # 检查用户所在OU是否需要移动
-            $currentOU = ($adUser.DistinguishedName -split ',',2)[1]
+            $currentOU = Get-ParentDN $adUser.DistinguishedName
             $needMove = $false
-            if ($deptName -and $currentOU -ne $expectedOUPath) {
+            if ($deptName -and -not (Test-SameDN $currentOU $expectedOUPath)) {
                 $needMove = $true
                 $changes += "OU: '$currentOU' -> '$expectedOUPath'"
             }

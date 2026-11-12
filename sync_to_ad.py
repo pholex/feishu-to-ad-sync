@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import csv
+import json
 import subprocess
 import os
 import sys
@@ -73,9 +74,10 @@ def format_ou_display(detail_text):
         # 提取OU部分，跳过DC部分和员工基础OU
         def extract_ou_path(ou_string):
             parts = []
-            for part in ou_string.split(','):
+            # 按未转义的逗号拆分（部门名可能含 \, 等转义字符），并去掉转义
+            for part in re.split(r'(?<!\\),', ou_string):
                 if part.strip().startswith('OU='):
-                    ou_name = part.strip()[3:]  # 去掉'OU='前缀
+                    ou_name = re.sub(r'\\(.)', r'\1', part.strip()[3:])  # 去掉'OU='前缀并去转义
                     if ou_name != '员工':  # 跳过员工基础OU
                         parts.append(ou_name)
                 elif part.strip().startswith('DC='):
@@ -679,7 +681,8 @@ def split_users_for_sync(feishu_csv, existing_users, users_without_union_id):
     matched_ad_users_no_uid = set()  # 记录匹配到的 AD 用户（无 Union ID，用 SamAccountName）
     
     # 读取部门CSV，构建部门路径映射
-    dept_path_map = {}  # {dept_id: "父部门\\子部门"}
+    dept_path_map = {}  # {dept_id: "父部门\\子部门"}（仅用于显示）
+    dept_names_map = {}  # {dept_id: ["父部门", "子部门"]}（传给 PowerShell 拼 OU 路径，部门名可含任意字符）
     dept_csv = get_output_path('feishu_departments.csv')
     
     if os.path.exists(dept_csv):
@@ -687,28 +690,24 @@ def split_users_for_sync(feishu_csv, existing_users, users_without_union_id):
             reader = csv.DictReader(f)
             dept_list = list(reader)
         
-        # 递归构建部门路径
-        def build_dept_path(dept_id, dept_list):
+        # 递归构建部门名称路径（上级 → 下级）；上级不在列表中时挂在基础 OU 下（与 create_ou.ps1 一致）
+        def build_dept_names(dept_id, dept_list):
             if dept_id == "0":
-                return ""
+                return []
             
             dept = next((d for d in dept_list if d['dept_id'] == dept_id), None)
             if not dept:
-                return ""
+                return []
             
             parent_id = dept['parent_dept_id']
-            dept_name = dept['dept_name']
-            
-            if parent_id == "0":
-                return dept_name
-            else:
-                parent_path = build_dept_path(parent_id, dept_list)
-                return f"{parent_path}\\{dept_name}" if parent_path else dept_name
+            return build_dept_names(parent_id, dept_list) + [dept['dept_name']]
         
         # 为所有部门构建路径
         for dept in dept_list:
             dept_id = dept['dept_id']
-            dept_path_map[dept_id] = build_dept_path(dept_id, dept_list)
+            names = build_dept_names(dept_id, dept_list)
+            dept_names_map[dept_id] = names
+            dept_path_map[dept_id] = '\\'.join(names)
     
     # 读取所有飞书用户
     feishu_users_list = []
@@ -737,6 +736,8 @@ def split_users_for_sync(feishu_csv, existing_users, users_without_union_id):
         
         # 从部门ID获取完整部门路径
         dept_path = dept_path_map.get(dept_id, '') if dept_id else ''
+        dept_names = dept_names_map.get(dept_id, []) if dept_id else []
+        dept_path_json = json.dumps(dept_names, ensure_ascii=False) if dept_names else ''
         
         # 优先检查拼音例外映射
         if pinyin in PINYIN_EXCEPTIONS:
@@ -788,7 +789,8 @@ def split_users_for_sync(feishu_csv, existing_users, users_without_union_id):
                 'EmployeeID': employee_no,
                 'EmployeeNumber': union_id,
                 'info': user_uuid,
-                'DepartmentName': dept_path
+                'DepartmentName': dept_path,
+                'DepartmentPath': dept_path_json
             })
         else:
             # 新建用户（EmployeeID 使用工号，EmployeeNumber 使用 Union ID）
@@ -799,7 +801,8 @@ def split_users_for_sync(feishu_csv, existing_users, users_without_union_id):
                 'EmployeeID': employee_no,
                 'EmployeeNumber': union_id,
                 'info': user_uuid,
-                'DepartmentName': dept_path
+                'DepartmentName': dept_path,
+                'DepartmentPath': dept_path_json
             })
     
     return new_users, update_users, matched_ad_users, matched_ad_users_no_uid
@@ -809,7 +812,7 @@ def create_csv_files(new_users, update_users):
     # 新建用户CSV
     if new_users:
         with open(get_output_path('ad_new_accounts.csv'), 'w', newline='', encoding='utf-8-sig') as f:
-            writer = csv.DictWriter(f, fieldnames=['DisplayName', 'SamAccountName', 'EmailAddress', 'EmployeeID', 'EmployeeNumber', 'info', 'DepartmentName'])
+            writer = csv.DictWriter(f, fieldnames=['DisplayName', 'SamAccountName', 'EmailAddress', 'EmployeeID', 'EmployeeNumber', 'info', 'DepartmentName', 'DepartmentPath'])
             writer.writeheader()
             writer.writerows(new_users)
         print(f"  - 待创建用户: {len(new_users)} 个")
@@ -817,7 +820,7 @@ def create_csv_files(new_users, update_users):
     # 更新用户CSV
     if update_users:
         with open(get_output_path('ad_check_accounts.csv'), 'w', newline='', encoding='utf-8-sig') as f:
-            writer = csv.DictWriter(f, fieldnames=['SamAccountName', 'DisplayName', 'EmailAddress', 'EmployeeID', 'EmployeeNumber', 'info', 'DepartmentName'])
+            writer = csv.DictWriter(f, fieldnames=['SamAccountName', 'DisplayName', 'EmailAddress', 'EmployeeID', 'EmployeeNumber', 'info', 'DepartmentName', 'DepartmentPath'])
             writer.writeheader()
             writer.writerows(update_users)
         print(f"  - 待检查用户: {len(update_users)} 个（实际更新数量取决于字段差异）")
@@ -842,12 +845,18 @@ $DC_RESIGNED_OU = "{DC_RESIGNED_OU}"
     scp_cmd = f"sshpass -p '{DC_PASSWORD}' scp -o ControlPath={SSH_CONTROL_PATH} {config_file} {DC_USER}@{DC_HOST}:~/dc_config.ps1"
     run_scp_with_retry(scp_cmd)
     
+    # 上传 DN 转义/比较工具，各 PowerShell 脚本以 . "$env:USERPROFILE\DnUtils.ps1" 引用
+    dn_utils = get_ps_path('DnUtils.ps1')
+    scp_cmd = f"sshpass -p '{DC_PASSWORD}' scp -o ControlPath={SSH_CONTROL_PATH} {dn_utils} {DC_USER}@{DC_HOST}:~/DnUtils.ps1"
+    run_scp_with_retry(scp_cmd)
+    
     print("✓ 已上传配置到域控制器")
 
-def execute_on_dc(operation, csv_file, ps_script, use_local=False, dry_run=None):
+def execute_on_dc(operation, csv_file, ps_script, use_local=False, dry_run=None, extra_args=''):
     """在域控制器上执行操作，返回实际处理的用户数
 
     dry_run: None 时跟随全局 DRY_RUN；True/False 覆盖本次调用
+    extra_args: 追加给 PowerShell 脚本的参数（须为可信的固定格式，如 "-MaxDeleteRatio 0.2"）
     """
     if dry_run is None:
         dry_run = DRY_RUN
@@ -901,7 +910,7 @@ def execute_on_dc(operation, csv_file, ps_script, use_local=False, dry_run=None)
         # PowerShell 脚本路径
         script_path = f"{DC_USER_HOME}/{operation}.ps1"
         # 使用 PowerShell 命令包装，重定向信息流
-        ps_command = f"& '{script_path}' {dry_run_flag} *>&1"
+        ps_command = f"& '{script_path}' {dry_run_flag} {extra_args} *>&1"
         ssh_cmd = f"sshpass -p '{DC_PASSWORD}' ssh -o StrictHostKeyChecking=no -o ControlPath={SSH_CONTROL_PATH} {DC_USER}@{DC_HOST} 'powershell -ExecutionPolicy Bypass -Command \"{ps_command}\"'"
         result = run_ssh_with_retry(ssh_cmd)
         
@@ -1060,17 +1069,30 @@ def cleanup_stale_ous():
     """
     dept_csv = get_output_path('feishu_departments.csv')
     ps_script = get_ps_path('delete_ou.ps1')
+    # 熔断阈值：残留 OU 超过现有部门 OU 的这个比例时跳过删除（默认 0.2）。
+    # 熔断后核对清单无误，可设置 OU_CLEANUP_MAX_RATIO=1 重新运行一次同步
+    ratio_env = os.getenv('OU_CLEANUP_MAX_RATIO', '').strip()
+    extra = ''
+    if ratio_env:
+        try:
+            ratio = float(ratio_env)
+            if not 0 <= ratio <= 1:
+                raise ValueError
+            extra = f"-MaxDeleteRatio {ratio}"
+            print(f"  使用熔断阈值 OU_CLEANUP_MAX_RATIO={ratio}")
+        except ValueError:
+            print(f"  ⚠ OU_CLEANUP_MAX_RATIO 无效（应为 0~1 的数字）: {ratio_env}，使用默认值")
     if DRY_RUN:
-        execute_on_dc('DeleteOUs', dept_csv, ps_script, use_local=True)
+        execute_on_dc('DeleteOUs', dept_csv, ps_script, use_local=True, extra_args=extra)
         return
     if AUTO_YES:
         print("是否清理飞书中已不存在的部门 OU？ [自动确认]")
-        execute_on_dc('DeleteOUs', dept_csv, ps_script, use_local=True, dry_run=False)
+        execute_on_dc('DeleteOUs', dept_csv, ps_script, use_local=True, dry_run=False, extra_args=extra)
         return
     # 交互模式：先预览，确认后再执行
-    execute_on_dc('DeleteOUs', dept_csv, ps_script, use_local=True, dry_run=True)
+    execute_on_dc('DeleteOUs', dept_csv, ps_script, use_local=True, dry_run=True, extra_args=extra)
     if confirm("\n是否按上述预览清理飞书中已不存在的部门 OU？", default=False):
-        execute_on_dc('DeleteOUs', dept_csv, ps_script, use_local=True, dry_run=False)
+        execute_on_dc('DeleteOUs', dept_csv, ps_script, use_local=True, dry_run=False, extra_args=extra)
 
 def sync_departments():
     """同步部门OU结构到AD域"""
@@ -1129,6 +1151,7 @@ def cleanup_remote_files():
         'UpdateAccounts.ps1',
         'DeleteOUs.ps1',
         'dc_config.ps1',
+        'DnUtils.ps1',
         'ExistingOUs.csv',
         'ExportedUsers.csv',
         'feishu_departments.csv',

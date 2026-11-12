@@ -13,6 +13,7 @@
 # 残留 OU 自底向上删除，只删"干净"的：没有链接 GPO、里面没有用户/计算机/组等任何非 OU 对象、
 # 子 OU 都已删除。不满足的不删也不移动，列出原因交人工处理。
 # 熔断：残留数超过现有部门 OU 的 MaxDeleteRatio（默认 20%）时整体跳过——多半是飞书数据不完整。
+#       sync_to_ad.py 从环境变量 OU_CLEANUP_MAX_RATIO 读取并传入。
 param(
     [switch]$DryRun,
     [double]$MaxDeleteRatio = 0.2,
@@ -34,19 +35,19 @@ if (Test-Path $configPath) {
     exit 1
 }
 
+# 加载 DN 转义/比较工具（与配置一同上传到域控，见 DnUtils.ps1）
+$dnUtilsPath = "$env:USERPROFILE\DnUtils.ps1"
+if (-not (Test-Path $dnUtilsPath)) {
+    Write-Error "DN 工具不存在: $dnUtilsPath"
+    exit 1
+}
+. $dnUtilsPath
+
 $BaseOU = $DC_BASE_OU
 $ExcludeOU = $DC_EXCLUDE_OU
 $ResignedOU = $DC_RESIGNED_OU
 
-$dnSplitter = [regex]::new('(?<!\\),')
-function Get-ParentDN { param($DN) return $dnSplitter.Split($DN, 2)[1] }
-function Get-Depth { param($DN) return $dnSplitter.Split($DN).Count }
-function Test-UnderDN {
-    # DN 是否等于 Root 或位于 Root 子树中
-    param($DN, $Root)
-    if (-not $Root) { return $false }
-    return ($DN -eq $Root) -or $DN.ToLower().EndsWith(",$($Root.ToLower())")
-}
+function Get-Depth { param($DN) return (Split-DN $DN).Count }
 
 $title = if ($DryRun) { "===== 清理飞书中已不存在的部门 OU [DRY-RUN] =====" } else { "===== 清理飞书中已不存在的部门 OU =====" }
 Write-Host "`n$title" -ForegroundColor Cyan
@@ -70,27 +71,27 @@ try {
     foreach ($id in @($feishuIds.Keys)) {
         $parts = @(); $cur = $id; $guard = 0
         while ($cur -and $cur -ne '0' -and $feishuIds.ContainsKey($cur) -and $guard -lt 64) {
-            $parts += "OU=$($feishuIds[$cur].dept_name)"
+            $parts += "OU=$(ConvertTo-RdnValue $feishuIds[$cur].dept_name)"
             $cur = [string]$feishuIds[$cur].parent_dept_id
             $guard++
         }
-        $expectedDNs[(($parts + $BaseOU) -join ',').ToLower()] = $id
+        $expectedDNs[(Get-NormalDN (($parts + $BaseOU) -join ','))] = $id
     }
 
     # ---- AD 中的部门 OU（不含基础 OU 本身、排除子树、离职员工 OU 子树）----
     $baseOUs = @(Get-ADOrganizationalUnit -Filter * -SearchBase $BaseOU -Properties Description, gPLink -ErrorAction Stop)
-    $allOUs = @($baseOUs | Where-Object { $_.DistinguishedName -ne $BaseOU -and
+    $allOUs = @($baseOUs | Where-Object { -not (Test-SameDN $_.DistinguishedName $BaseOU) -and
         -not (Test-UnderDN $_.DistinguishedName $ExcludeOU) -and -not (Test-UnderDN $_.DistinguishedName $ResignedOU) })
 
     # ---- 有效 OU 及其所有上级 ----
     $keep = @{}
     foreach ($ou in $allOUs) {
         $idLive = $ou.Description -and $feishuIds.ContainsKey([string]$ou.Description)
-        $posLive = $expectedDNs.ContainsKey($ou.DistinguishedName.ToLower())
+        $posLive = $expectedDNs.ContainsKey((Get-NormalDN $ou.DistinguishedName))
         if ($idLive -or $posLive) {
             $dn = $ou.DistinguishedName
-            while ($dn -and $dn -ne $BaseOU -and -not $keep.ContainsKey($dn.ToLower())) {
-                $keep[$dn.ToLower()] = $true
+            while ($dn -and -not (Test-SameDN $dn $BaseOU) -and -not $keep.ContainsKey((Get-NormalDN $dn))) {
+                $keep[(Get-NormalDN $dn)] = $true
                 $dn = Get-ParentDN $dn
             }
         }
@@ -100,7 +101,7 @@ try {
     # 例外：该ID已在别的 OU 上（如该部门的正式 OU 搬迁失败仍在别处）——再写一份会让按ID查找到两个 OU，只报告不修改
     $idFixed = 0; $idSkipped = 0
     foreach ($ou in $allOUs) {
-        $dnKey = $ou.DistinguishedName.ToLower()
+        $dnKey = Get-NormalDN $ou.DistinguishedName
         if (-not $expectedDNs.ContainsKey($dnKey)) { continue }
         $want = $expectedDNs[$dnKey]
         $old = [string]$ou.Description
@@ -134,7 +135,7 @@ try {
     }
 
     # 残留 OU，深层在前（先删子再删父）
-    $stale = @($allOUs | Where-Object { -not $keep.ContainsKey($_.DistinguishedName.ToLower()) } |
+    $stale = @($allOUs | Where-Object { -not $keep.ContainsKey((Get-NormalDN $_.DistinguishedName)) } |
         Sort-Object { Get-Depth $_.DistinguishedName } -Descending)
 
     Write-Host "部门 OU: $($allOUs.Count) 个，飞书部门: $($feishuIds.Count) 个，判定为残留: $($stale.Count) 个`n"
@@ -149,7 +150,7 @@ try {
     if ($tripped) {
         Write-Host "⚠ 残留 OU 数 ($($stale.Count)) 超过现有部门 OU 的 $([int]($MaxDeleteRatio * 100))% ($limit)，疑似飞书数据不完整" -ForegroundColor Red
         if (-not $DryRun) {
-            Write-Host "✗ 本次不做任何删除。确认无误后可在域控上手动执行: DeleteOUs.ps1 -MaxDeleteRatio 1" -ForegroundColor Red
+            Write-Host "✗ 本次不做任何删除。核对下方清单无误后，设置环境变量 OU_CLEANUP_MAX_RATIO=1 重新运行一次同步即可" -ForegroundColor Red
             Write-Host "`n残留 OU 列表:"
             $stale | ForEach-Object { Write-Host "  - $($_.DistinguishedName)  (Description='$($_.Description)')" }
             exit 1
@@ -168,7 +169,7 @@ try {
             $children = @(Get-ADObject -SearchBase $dn -SearchScope OneLevel -Filter * -ErrorAction Stop)
             $objects = @($children | Where-Object { $_.ObjectClass -ne 'organizationalUnit' })
             $remainingChildOUs = @($children | Where-Object {
-                $_.ObjectClass -eq 'organizationalUnit' -and -not $deleted.ContainsKey($_.DistinguishedName.ToLower()) })
+                $_.ObjectClass -eq 'organizationalUnit' -and -not $deleted.ContainsKey((Get-NormalDN $_.DistinguishedName)) })
 
             $reasons = @()
             if (([string]$ou.gPLink).Trim() -ne '') { $reasons += "链接了 GPO" }
@@ -199,7 +200,7 @@ try {
                 Remove-ADOrganizationalUnit -Identity $ou.ObjectGUID -Confirm:$false -ErrorAction Stop
                 Write-Host "✓ 已删除: $dn$desc" -ForegroundColor Green
             }
-            $deleted[$dn.ToLower()] = $true
+            $deleted[(Get-NormalDN $dn)] = $true
             $successCount++
         }
         catch {
