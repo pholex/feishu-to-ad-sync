@@ -133,7 +133,16 @@ try {
                             $currentUser = Get-ADUser -Identity $samAccountName -Properties DistinguishedName
                             Move-ADObject -Identity $currentUser.DistinguishedName -TargetPath $expectedOUPath -ErrorAction Stop
                         } catch {
-                            Write-Host "  ⚠ OU移动失败: $_ (目标OU: $expectedOUPath)" -ForegroundColor Yellow
+                            # OU 移动失败算失败，不能计入"更新成功"（字段若已更新，在失败原因里注明）
+                            $fieldNote = if ($updateParams.Count -gt 1) { "（其它字段已更新）" } else { "" }
+                            Write-Host "✗ 更新失败: $samAccountName $displayName - OU移动失败$fieldNote : $($_.Exception.Message) (目标OU: $expectedOUPath)" -ForegroundColor Red
+                            $failureCount++
+                            $failures += [PSCustomObject]@{
+                                SamAccountName = $samAccountName
+                                DisplayName = $displayName
+                                ErrorMessage = "OU移动失败$fieldNote : $($_.Exception.Message) (目标OU: $expectedOUPath)"
+                            }
+                            continue
                         }
                     }
                     Write-Host "✓ 更新成功: $samAccountName $displayName ($changesList)" -ForegroundColor Green

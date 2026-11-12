@@ -58,6 +58,60 @@ function Test-OUExists {
     }
 }
 
+# 判断 OU 是否为"空壳"：整棵子树只有 OU，且都没有 Description（部门ID）
+# 典型来源：旧版脚本在父 OU 移动失败后，为子部门自动补建的无 ID 父 OU
+function Test-IsShellOU {
+    param($DN)
+    $objs = Get-ADObject -SearchBase $DN -SearchScope Subtree -Filter * -Properties Description -ErrorAction Stop
+    foreach ($o in $objs) {
+        if ($o.ObjectClass -ne 'organizationalUnit') { return $false }
+        if ($o.Description) { return $false }
+    }
+    return $true
+}
+
+# 删除空壳 OU（含其下的空壳子 OU），先解除"防止意外删除"
+function Remove-ShellOU {
+    param($DN)
+    Get-ADOrganizationalUnit -SearchBase $DN -SearchScope Subtree -Filter * -ErrorAction Stop |
+        ForEach-Object { Set-ADOrganizationalUnit -Identity $_.ObjectGUID -ProtectedFromAccidentalDeletion $false -ErrorAction Stop }
+    Remove-ADOrganizationalUnit -Identity $DN -Recursive -Confirm:$false -ErrorAction Stop
+}
+
+# 移动 OU：开启"防止意外删除"的 OU 会被 Move-ADObject 拒绝（Access is denied），
+# 因为移动=从原位置删除+挂到新位置。先临时关闭保护，移动后恢复（子 OU 随父 OU 一起移动）
+function Move-OUSafely {
+    param($DN, $TargetPath)
+    $ou = Get-ADOrganizationalUnit -Identity $DN -Properties ProtectedFromAccidentalDeletion -ErrorAction Stop
+    $guid = $ou.ObjectGUID
+    $wasProtected = $ou.ProtectedFromAccidentalDeletion
+    if ($wasProtected) {
+        Set-ADOrganizationalUnit -Identity $guid -ProtectedFromAccidentalDeletion $false -ErrorAction Stop
+    }
+    try {
+        Move-ADObject -Identity $guid -TargetPath $TargetPath -ErrorAction Stop
+    } finally {
+        if ($wasProtected) {
+            Set-ADOrganizationalUnit -Identity $guid -ProtectedFromAccidentalDeletion $true -ErrorAction SilentlyContinue
+        }
+    }
+}
+
+# 移动前清理目标位置的同名 OU：空壳则删除，否则报错（不自动删除有内容的 OU）
+function Clear-MoveTarget {
+    param($TargetDN, [switch]$DryRun)
+    if (-not (Test-OUExists -DN $TargetDN)) { return }
+    if (-not (Test-IsShellOU -DN $TargetDN)) {
+        throw "目标位置已存在同名OU且其中有用户或带部门ID的子OU，需人工合并: $TargetDN"
+    }
+    if ($DryRun) {
+        Write-Host "[DRY-RUN] 将删除目标位置的空壳OU（无部门ID、无用户）- $TargetDN" -ForegroundColor Cyan
+    } else {
+        Remove-ShellOU -DN $TargetDN
+        Write-Host "  ✓ 已删除目标位置的空壳OU（无部门ID、无用户）- $TargetDN" -ForegroundColor Yellow
+    }
+}
+
 # 拓扑排序函数：确保父部门在子部门之前
 function Sort-DepartmentsByDependency {
     param($Departments)
@@ -110,13 +164,23 @@ try {
     
     Write-Host "开始处理部门 OU..." -ForegroundColor Cyan
     
+    # 处理失败的部门ID：其所有子部门直接跳过，避免把子 OU 单独拆散到空壳父 OU 下
+    $failedDeptIds = @{}
+
     foreach ($dept in $departments) {
+        $deptId = $dept.dept_id
+        $failBefore = $failureCount
         try {
             $deptName = $dept.dept_name
-            $deptId = $dept.dept_id
             $parentId = $dept.parent_dept_id
             $level = [int]$dept.level
-            
+
+            if ($failedDeptIds.ContainsKey($parentId)) {
+                Write-Host "✗ 跳过 - $deptName : 上级部门处理失败，待上级修复后自动处理" -ForegroundColor DarkYellow
+                $failureCount++
+                continue
+            }
+
             # 确定父OU路径
             if ($parentId -eq "0") {
                 $parentPath = $BaseOU
@@ -136,46 +200,14 @@ try {
             $expectedDN = "OU=$deptName,$parentPath"
             $expectedDesc = $deptId
             
-            # 检查父OU是否存在，如果不存在则尝试创建
-            if (-not (Test-OUExists -DN $parentPath)) {
-                # 尝试递归创建父OU（从根到叶）
-                $parentParts = $parentPath -split ',' | Where-Object { $_ -like 'OU=*' }
-                [array]::Reverse($parentParts)  # 反转数组，从根部门开始
-                $dcParts = ($parentPath -split ',' | Where-Object { $_ -like 'DC=*' }) -join ','
-                $currentPath = $dcParts
-                $createFailed = $false
-                
-                foreach ($part in $parentParts) {
-                    $ouName = $part -replace '^OU=', ''
-                    $testPath = "$part,$currentPath"
-                    
-                    if (-not (Test-OUExists -DN $testPath)) {
-                        try {
-                            if (-not $DryRun) {
-                                New-ADOrganizationalUnit -Name $ouName -Path $currentPath -ErrorAction Stop
-                                Write-Host "  ✓ 自动创建父OU - $ouName" -ForegroundColor Green
-                            }
-                        } catch {
-                            Write-Host "✗ 跳过 - $deptName : 无法创建父OU ($ouName): $($_.Exception.Message)" -ForegroundColor Red
-                            $failureCount++
-                            $createFailed = $true
-                            break  # 跳出 foreach ($part)
-                        }
-                    }
-                    $currentPath = $testPath
-                }
-                
-                # 如果创建失败，跳过当前部门
-                if ($createFailed) {
-                    continue  # 跳出 foreach ($dept)
-                }
-                
-                # 再次检查父OU
-                if (-not (Test-OUExists -DN $parentPath)) {
-                    Write-Host "✗ 跳过 - $deptName : 父OU仍不存在 ($parentPath)" -ForegroundColor Red
-                    $failureCount++
-                    continue
-                }
+            # 检查父OU是否存在。部门已按拓扑序处理，父部门总是先于子部门被创建/移动，
+            # 父OU不存在说明父部门没处理好——不能在这里补建无部门ID的父OU，否则会留下空壳，
+            # 下次父部门移动时与之重名冲突（name already in use）
+            # DryRun 下父OU可能只是"将创建/将移动"，不据此判失败
+            if (-not $DryRun -and -not (Test-OUExists -DN $parentPath)) {
+                Write-Host "✗ 跳过 - $deptName : 父OU不存在 ($parentPath)" -ForegroundColor Red
+                $failureCount++
+                continue
             }
             
             # 先通过部门ID查找（可能已改名或移动）
@@ -196,6 +228,9 @@ try {
                     $needMove = ($currentParent -ne $parentPath)
                     
                     if ($DryRun) {
+                        if ($needMove) {
+                            Clear-MoveTarget -TargetDN "OU=$currentName,$parentPath" -DryRun
+                        }
                         if ($needRename -and $needMove) {
                             Write-Host "[DRY-RUN] 将重命名并移动 - $currentName -> $deptName, 移动到 $parentPath" -ForegroundColor Cyan
                             $renamedCount++
@@ -211,7 +246,8 @@ try {
                         # 先移动再重命名
                         if ($needMove) {
                             try {
-                                Move-ADObject -Identity $currentDN -TargetPath $parentPath -ErrorAction Stop
+                                Clear-MoveTarget -TargetDN "OU=$currentName,$parentPath"
+                                Move-OUSafely -DN $currentDN -TargetPath $parentPath
                                 Write-Host "✓ 已移动 - $deptName 到 $parentPath" -ForegroundColor Cyan
                                 $movedCount++
                                 $currentDN = "OU=$currentName,$parentPath"
@@ -241,14 +277,14 @@ try {
                                 $childCount = (Get-ADObject -Filter * -SearchBase $currentDN -SearchScope OneLevel -ErrorAction SilentlyContinue | Measure-Object).Count
                                 Write-Host "  OU中对象数量: $childCount" -ForegroundColor Yellow
                                 
-                                Write-Host "  ⚠ 这是同一个OU（部门ID匹配），必须移动，不能创建新OU" -ForegroundColor Red
+                                Write-Host "  ⚠ 这是同一个OU（部门ID匹配），必须移动，不能创建新OU；其子部门本次将跳过" -ForegroundColor Red
                                 Write-Host "  请手动检查权限或手动移动此OU" -ForegroundColor Red
                                 $failureCount++
                                 continue
                             }
                         }
                         if ($needRename) {
-                            Rename-ADObject -Identity $currentDN -NewName $deptName
+                            Rename-ADObject -Identity $currentDN -NewName $deptName -ErrorAction Stop
                             Write-Host "✓ 已重命名 - $currentName -> $deptName" -ForegroundColor Cyan
                             $renamedCount++
                         }
@@ -288,7 +324,8 @@ try {
                                 $movedCount++
                             } else {
                                 try {
-                                    Move-ADObject -Identity $oldDN -TargetPath $parentPath -ErrorAction Stop
+                                    Clear-MoveTarget -TargetDN "OU=$deptName,$parentPath"
+                                    Move-OUSafely -DN $oldDN -TargetPath $parentPath
                                     Write-Host "✓ 已移动 - $deptName 从其他位置到 $parentPath" -ForegroundColor Cyan
                                     $movedCount++
                                 } catch {
@@ -339,6 +376,10 @@ try {
             Write-Host "✗ 处理失败 - $deptName : $($_.Exception.Message)" -ForegroundColor Red
             Write-Host "  错误位置: $($_.InvocationInfo.ScriptLineNumber) 行" -ForegroundColor Gray
             $failureCount++
+        }
+        finally {
+            # finally 在 continue 时也会执行：本部门有任何失败，就标记，让子部门跳过
+            if ($failureCount -gt $failBefore) { $failedDeptIds[$deptId] = $true }
         }
     }
     
