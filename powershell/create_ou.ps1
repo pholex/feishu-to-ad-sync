@@ -58,13 +58,45 @@ function Test-OUExists {
     }
 }
 
-# 判断 OU 是否为"空壳"：整棵子树只有 OU，且都没有 Description（部门ID）
-# 典型来源：旧版脚本在父 OU 移动失败后，为子部门自动补建的无 ID 父 OU
-function Get-ShellBlockers {
-    # 返回让该 OU 不能算作空壳的对象：非 OU 对象（用户/组/计算机等），或带 Description 的 OU
+
+# ===== 同名 OU 冲突处理：把目标位置的同名 OU 合并进源 OU =====
+# 部门 OU 移动时，目标位置可能已有同名 OU（旧版脚本补建的空壳、或人工预建的结构）。
+# 保留源 OU（Description=飞书部门ID，GUID 不变，GPO 链接/委派权限不受影响），
+# 把目标 OU 的内容并入源 OU、删除已清空的目标 OU，然后再把源 OU 移过去。
+# 无人值守运行，遇到以下情况一律不动、列出问题让人工处理：
+#   - 要删除的 OU 链接了 GPO 或设置了阻止继承（删除会丢失）
+#   - 存在用户以外的对象（计算机/组/联系人等：换 OU 可能改变适用的 GPO 或外部引用）
+#   - 同名 OU 的部门ID不一致（不是同一个部门）
+#   - 要移入的对象在源 OU 里已有同名对象
+#   - 整体移入的 OU 带有部门ID且该ID在别处已存在（会导致按ID查找到两个 OU）
+
+# 取 DN 的第一段 RDN（跳过转义的逗号，如 CN=Zhang\, San）
+function Get-RDN {
     param($DN)
-    $objs = @(Get-ADObject -SearchBase $DN -SearchScope Subtree -Filter * -Properties Description -ErrorAction Stop)
-    return @($objs | Where-Object { $_.ObjectClass -ne 'organizationalUnit' -or $_.Description })
+    return [regex]::new('(?<!\\),').Split($DN, 2)[0]
+}
+
+function Test-ADObjectExists {
+    param($DN)
+    try {
+        $null = Get-ADObject -Identity $DN -ErrorAction Stop
+        return $true
+    } catch {
+        return $false
+    }
+}
+
+function Test-HasGPLink {
+    param($Obj)
+    return ([string]$Obj.gPLink).Trim() -ne ''
+}
+
+# 返回让该 OU 不能算作"空壳"的对象：非 OU 对象、带 Description（部门ID）的 OU、链接了 GPO 的 OU
+# 空壳典型来源：旧版脚本在父 OU 移动失败后，为子部门自动补建的无 ID 父 OU
+function Get-ShellBlockers {
+    param($DN)
+    $objs = @(Get-ADObject -SearchBase $DN -SearchScope Subtree -Filter * -Properties Description, gPLink -ErrorAction Stop)
+    return @($objs | Where-Object { $_.ObjectClass -ne 'organizationalUnit' -or $_.Description -or (Test-HasGPLink $_) })
 }
 
 function Test-IsShellOU {
@@ -80,47 +112,127 @@ function Remove-ShellOU {
     Remove-ADOrganizationalUnit -Identity $DN -Recursive -Confirm:$false -ErrorAction Stop
 }
 
-# 移动 OU：开启"防止意外删除"的 OU 会被 Move-ADObject 拒绝（Access is denied），
-# 因为移动=从原位置删除+挂到新位置。先临时关闭保护，移动后恢复（子 OU 随父 OU 一起移动）
-function Move-OUSafely {
+# 移动 AD 对象（OU 或用户）：开启"防止意外删除"的对象会被 Move-ADObject 拒绝（Access is denied），
+# 因为移动=从原位置删除+挂到新位置。先临时关闭保护，移动后恢复（子对象随父 OU 一起移动）
+function Move-ObjectSafely {
     param($DN, $TargetPath)
-    $ou = Get-ADOrganizationalUnit -Identity $DN -Properties ProtectedFromAccidentalDeletion -ErrorAction Stop
-    $guid = $ou.ObjectGUID
-    $wasProtected = $ou.ProtectedFromAccidentalDeletion
+    $obj = Get-ADObject -Identity $DN -Properties ProtectedFromAccidentalDeletion -ErrorAction Stop
+    $guid = $obj.ObjectGUID
+    $wasProtected = $obj.ProtectedFromAccidentalDeletion
     if ($wasProtected) {
-        Set-ADOrganizationalUnit -Identity $guid -ProtectedFromAccidentalDeletion $false -ErrorAction Stop
+        Set-ADObject -Identity $guid -ProtectedFromAccidentalDeletion $false -ErrorAction Stop
     }
     try {
         Move-ADObject -Identity $guid -TargetPath $TargetPath -ErrorAction Stop
     } finally {
         if ($wasProtected) {
-            Set-ADOrganizationalUnit -Identity $guid -ProtectedFromAccidentalDeletion $true -ErrorAction SilentlyContinue
+            Set-ADObject -Identity $guid -ProtectedFromAccidentalDeletion $true -ErrorAction SilentlyContinue
         }
     }
 }
 
-# 移动前清理目标位置的同名 OU：空壳则删除，否则报错（不自动删除有内容的 OU）
-function Clear-MoveTarget {
-    param($TargetDN, [switch]$DryRun)
-    if (-not (Test-OUExists -DN $TargetDN)) { return }
-    $blockers = @(Get-ShellBlockers -DN $TargetDN)
-    if ($blockers.Count -gt 0) {
-        # 列出挡路的对象，免得再手动去域控上查
-        $maxShow = 20
-        $lines = $blockers | Select-Object -First $maxShow | ForEach-Object {
-            $desc = if ($_.Description) { " Description='$($_.Description)'" } else { "" }
-            "      - [$($_.ObjectClass)] $($_.Name)$desc  ($($_.DistinguishedName))"
+# 预检（只读）：检查把整棵 OU 子树原样移入源 OU 是否安全，输出问题描述
+function Get-MoveInProblems {
+    param($DN)
+    $objs = @(Get-ADObject -SearchBase $DN -SearchScope Subtree -Filter * -Properties Description -ErrorAction Stop)
+    foreach ($o in $objs) {
+        if ($o.ObjectClass -eq 'organizationalUnit') {
+            if ($o.Description) {
+                $d = $o.Description
+                $dupes = @(Get-ADOrganizationalUnit -Filter { Description -eq $d } -SearchBase $BaseOU -ErrorAction Stop |
+                    Where-Object { $_.ObjectGUID -ne $o.ObjectGUID })
+                if ($dupes.Count -gt 0) {
+                    "部门ID重复，移入后按ID会查到两个OU: $($o.DistinguishedName) 与 $($dupes[0].DistinguishedName) (Description='$d')"
+                }
+            }
+        } elseif ($o.ObjectClass -ne 'user') {
+            "非用户对象 [$($o.ObjectClass)]，需人工处理: $($o.DistinguishedName)"
         }
-        if ($blockers.Count -gt $maxShow) { $lines += "      ... 共 $($blockers.Count) 个，仅显示前 $maxShow 个" }
-        throw ("目标位置已存在同名OU且非空壳，需人工合并: $TargetDN`n    挡路对象 ($($blockers.Count) 个，非OU对象或带Description的OU):`n" + ($lines -join "`n"))
-    }
-    if ($DryRun) {
-        Write-Host "[DRY-RUN] 将删除目标位置的空壳OU（无部门ID、无用户）- $TargetDN" -ForegroundColor Cyan
-    } else {
-        Remove-ShellOU -DN $TargetDN
-        Write-Host "  ✓ 已删除目标位置的空壳OU（无部门ID、无用户）- $TargetDN" -ForegroundColor Yellow
     }
 }
+
+# 预检（只读）：检查能否把 TargetDN 合并进 SourceDN，输出问题描述（无输出=可以合并）
+function Get-MergeProblems {
+    param($TargetDN, $SourceDN)
+    $t = Get-ADObject -Identity $TargetDN -Properties Description, gPLink, gPOptions -ErrorAction Stop
+    $s = Get-ADObject -Identity $SourceDN -Properties Description -ErrorAction Stop
+    if (Test-HasGPLink $t) { "链接了 GPO，合并后删除会丢失链接: $TargetDN" }
+    if ($t.gPOptions -eq 1) { "设置了阻止继承，合并后删除会丢失该设置: $TargetDN" }
+    if ($t.Description -and $t.Description -ne $s.Description) {
+        "部门ID不一致，不是同一部门: $TargetDN (Description='$($t.Description)') vs 源 $SourceDN (Description='$($s.Description)')"
+    }
+
+    $children = @(Get-ADObject -SearchBase $TargetDN -SearchScope OneLevel -Filter * -ErrorAction Stop)
+    foreach ($c in $children) {
+        $destDN = "$(Get-RDN $c.DistinguishedName),$SourceDN"
+        if ($c.ObjectClass -eq 'organizationalUnit') {
+            if (Test-ADObjectExists $destDN) {
+                Get-MergeProblems -TargetDN $c.DistinguishedName -SourceDN $destDN    # 两边都有：递归合并
+            } elseif (-not (Test-IsShellOU -DN $c.DistinguishedName)) {
+                Get-MoveInProblems -DN $c.DistinguishedName                            # 源里没有：整体移入
+            }                                                                          # 源里没有且是空壳：直接删除，无需检查
+        } elseif ($c.ObjectClass -eq 'user') {
+            if (Test-ADObjectExists $destDN) { "源OU中已有同名对象，无法移入: $($c.DistinguishedName) -> $destDN" }
+        } else {
+            "非用户对象 [$($c.ObjectClass)]，需人工处理: $($c.DistinguishedName)"
+        }
+    }
+}
+
+# 执行合并（须先通过 Get-MergeProblems 预检）：TargetDN 的内容并入 SourceDN，然后删除已清空的 TargetDN
+function Merge-OUInto {
+    param($TargetDN, $SourceDN, [switch]$DryRun)
+    $prefix = if ($DryRun) { "[DRY-RUN]   将" } else { "    ✓ 已" }
+    $children = @(Get-ADObject -SearchBase $TargetDN -SearchScope OneLevel -Filter * -ErrorAction Stop)
+    foreach ($c in $children) {
+        $destDN = "$(Get-RDN $c.DistinguishedName),$SourceDN"
+        if ($c.ObjectClass -eq 'organizationalUnit' -and (Test-ADObjectExists $destDN)) {
+            Merge-OUInto -TargetDN $c.DistinguishedName -SourceDN $destDN -DryRun:$DryRun
+        } elseif ($c.ObjectClass -eq 'organizationalUnit' -and (Test-IsShellOU -DN $c.DistinguishedName)) {
+            if (-not $DryRun) { Remove-ShellOU -DN $c.DistinguishedName }
+            Write-Host "${prefix}删除空壳OU: $($c.DistinguishedName)" -ForegroundColor Yellow
+        } else {
+            $fromDN = $c.DistinguishedName
+            if (-not $DryRun) { Move-ObjectSafely -DN $fromDN -TargetPath $SourceDN }
+            Write-Host "${prefix}移入 [$($c.ObjectClass)] $($c.Name): $fromDN -> $SourceDN" -ForegroundColor Yellow
+        }
+    }
+    if (-not $DryRun) {
+        # 已清空；不加 -Recursive，万一还有残留对象则报错而不是连带删除
+        Set-ADOrganizationalUnit -Identity $TargetDN -ProtectedFromAccidentalDeletion $false -ErrorAction Stop
+        Remove-ADOrganizationalUnit -Identity $TargetDN -Confirm:$false -ErrorAction Stop
+    }
+    Write-Host "${prefix}删除已清空的OU: $TargetDN" -ForegroundColor Yellow
+}
+
+# 移动前处理目标位置的同名 OU：空壳直接删除；否则预检通过后合并进源 OU；预检不过则报错并列出问题
+function Clear-MoveTarget {
+    param($TargetDN, $SourceDN, [switch]$DryRun)
+    if (-not (Test-OUExists -DN $TargetDN)) { return }
+
+    if (Test-IsShellOU -DN $TargetDN) {
+        if ($DryRun) {
+            Write-Host "[DRY-RUN] 将删除目标位置的空壳OU（无部门ID、无用户）- $TargetDN" -ForegroundColor Cyan
+        } else {
+            Remove-ShellOU -DN $TargetDN
+            Write-Host "  ✓ 已删除目标位置的空壳OU（无部门ID、无用户）- $TargetDN" -ForegroundColor Yellow
+        }
+        return
+    }
+
+    $problems = @(Get-MergeProblems -TargetDN $TargetDN -SourceDN $SourceDN)
+    if ($problems.Count -gt 0) {
+        $maxShow = 20
+        $lines = @($problems | Select-Object -First $maxShow | ForEach-Object { "      - $_" })
+        if ($problems.Count -gt $maxShow) { $lines += "      ... 共 $($problems.Count) 个，仅显示前 $maxShow 个" }
+        throw ("目标位置已存在同名OU，无法自动合并: $TargetDN`n    问题 ($($problems.Count) 个):`n" + ($lines -join "`n"))
+    }
+
+    $head = if ($DryRun) { "[DRY-RUN] 将合并" } else { "  合并" }
+    Write-Host "$head 目标位置的同名OU到源OU: $TargetDN -> $SourceDN" -ForegroundColor Cyan
+    Merge-OUInto -TargetDN $TargetDN -SourceDN $SourceDN -DryRun:$DryRun
+}
+
 
 # 拓扑排序函数：确保父部门在子部门之前
 function Sort-DepartmentsByDependency {
@@ -239,7 +351,7 @@ try {
                     
                     if ($DryRun) {
                         if ($needMove) {
-                            Clear-MoveTarget -TargetDN "OU=$currentName,$parentPath" -DryRun
+                            Clear-MoveTarget -TargetDN "OU=$currentName,$parentPath" -SourceDN $currentDN -DryRun
                         }
                         if ($needRename -and $needMove) {
                             Write-Host "[DRY-RUN] 将重命名并移动 - $currentName -> $deptName, 移动到 $parentPath" -ForegroundColor Cyan
@@ -256,8 +368,8 @@ try {
                         # 先移动再重命名
                         if ($needMove) {
                             try {
-                                Clear-MoveTarget -TargetDN "OU=$currentName,$parentPath"
-                                Move-OUSafely -DN $currentDN -TargetPath $parentPath
+                                Clear-MoveTarget -TargetDN "OU=$currentName,$parentPath" -SourceDN $currentDN
+                                Move-ObjectSafely -DN $currentDN -TargetPath $parentPath
                                 Write-Host "✓ 已移动 - $deptName 到 $parentPath" -ForegroundColor Cyan
                                 $movedCount++
                                 $currentDN = "OU=$currentName,$parentPath"
@@ -334,8 +446,8 @@ try {
                                 $movedCount++
                             } else {
                                 try {
-                                    Clear-MoveTarget -TargetDN "OU=$deptName,$parentPath"
-                                    Move-OUSafely -DN $oldDN -TargetPath $parentPath
+                                    Clear-MoveTarget -TargetDN "OU=$deptName,$parentPath" -SourceDN $oldDN
+                                    Move-ObjectSafely -DN $oldDN -TargetPath $parentPath
                                     Write-Host "✓ 已移动 - $deptName 从其他位置到 $parentPath" -ForegroundColor Cyan
                                     $movedCount++
                                 } catch {
